@@ -29,6 +29,16 @@ Android 模拟器用 `start_android.bat`。Windows 直接运行 `start_windows.b
 4. 完成后至少运行 `flutter analyze` 和 `flutter test`；涉及界面时再构建或运行 Windows 版验证。
 5. 不要主动 `git commit` 或 `git push`，除非用户要求。
 
+## 提交消息
+
+沿用 Conventional Commits：`type(scope): 摘要`。
+
+- type 用 `feat` / `fix` / `docs` / `test` / `refactor` / `perf` / `build` / `chore`。
+- scope 可选、小写；摘要用中文，一句话说明做了什么，不加句号。
+- 正文写原因、影响和兼容性；破坏性变更用 `!` 或 `BREAKING CHANGE:`。
+- 一次提交只做一件事；不要用“更新”“修改”这类空泛摘要。
+- 示例：`feat(exam): 支持过期考试星标`、`fix(schedule): 修正节次时间对齐`。
+
 ## 目录
 
 - `lib/ui/`：页面与 Material 组件。

@@ -1,0 +1,23 @@
+{
+  "currentPage": 1,
+  "totalPage": 1,
+  "totalResult": "2",
+  "items": [
+    {
+      "id": "TEST-MESSAGE-2",
+      "cjsj": "2026-10-21 08:00:00",
+      "jsmc": "学生",
+      "jsdm": "xs",
+      "xxbt": "停课提醒：测试课程 B 停上一次",
+      "xxnr": "停课提醒：测试课程 B 第 8 周停上一次。"
+    },
+    {
+      "id": "TEST-MESSAGE-1",
+      "cjsj": "2026-10-20 17:31:13",
+      "jsmc": "学生",
+      "jsdm": "xs",
+      "xxbt": "调课提醒：测试课程 A 调整到第 9 周",
+      "xxnr": "调课提醒：测试课程 A 调整到第 9 周星期三第 3-4 节。"
+    }
+  ]
+}

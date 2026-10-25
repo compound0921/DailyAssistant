@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-25T20:30:00+08:00",
+  "title": "Design System: 校园助手",
+  "extensions": {
+    "motion": [
+      {
+        "name": "fast",
+        "value": "160ms",
+        "purpose": "Day-chip selection and small state changes."
+      },
+      {
+        "name": "standard",
+        "value": "200ms",
+        "purpose": "Theme change and route-level transitions."
+      },
+      {
+        "name": "curve",
+        "value": "easeOutCubic",
+        "purpose": "Default easing; no bounce."
+      }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "0-599px" },
+      { "name": "tablet", "value": "600-899px" },
+      { "name": "desktop", "value": "900px+" }
+    ],
+    "rules": [
+      "One blue primary action per screen; orange/red only for urgency.",
+      "Never use outline or outlineVariant as a text color; use onSurfaceVariant.",
+      "Urgency must be conveyed by text or remaining time as well as color.",
+      "Cards are flat white/charcoal with 1px hairline borders and 18px radius.",
+      "Phone uses bottom navigation; desktop uses a left rail.",
+      "Phone timetable shows all seven days of the week grid on one screen with no horizontal scroll; wider layouts may scroll horizontally when column width is enlarged.",
+      "No gradients, glass, or decorative world-building."
+    ]
+  }
+}

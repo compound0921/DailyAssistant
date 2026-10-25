@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390,initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:390px;height:844px;overflow:hidden}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#e6e8e1;color:#1b2b33}
+  .sheet{height:844px;display:flex;flex-direction:column;background-image:linear-gradient(#c9cfc7 1px,transparent 1px),linear-gradient(90deg,#c9cfc7 1px,transparent 1px);background-size:22px 22px;background-position:-1px -1px}
+  header{padding:22px 18px 10px 42px;border-bottom:2px solid #1b2b33;position:relative}
+  header:before{content:"08";position:absolute;left:10px;top:18px;font:700 11px/1 ui-monospace,Consolas,monospace;letter-spacing:.08em;color:#7c8f85}
+  h1{font-size:29px;line-height:1.05;letter-spacing:-.04em;font-weight:800}
+  .meta{margin-top:5px;font:500 10px/1.4 ui-monospace,Consolas,monospace;letter-spacing:.04em;color:#597067}
+  .rule{display:flex;align-items:center;gap:8px;margin-top:10px;font:700 10px/1 ui-monospace,Consolas,monospace;color:#597067}
+  .rule i{flex:1;height:1px;background:#aeb9b1}
+  main{flex:1;display:flex;min-height:0}
+  .rail{width:32px;border-right:1px solid #aeb9b1;display:flex;flex-direction:column;align-items:center;padding-top:14px;gap:26px;font:600 9px/1 ui-monospace,Consolas,monospace;color:#8a9a8e}
+  .content{flex:1;padding:12px 14px 0 12px;display:flex;flex-direction:column;gap:12px;min-width:0}
+  .section{display:flex;flex-direction:column;gap:6px}
+  .sec-head{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid #1b2b33;padding-bottom:3px}
+  .sec-head b{font:800 12px/1.2 ui-monospace,Consolas,monospace;letter-spacing:.02em}
+  .sec-head span{font:500 9px/1 ui-monospace,Consolas,monospace;color:#7c8f85}
+  table{width:100%;border-collapse:collapse;font-size:11px}
+  td,th{padding:6px 2px;border-bottom:1px solid #c3cac2;text-align:left;vertical-align:top}
+  th{font:600 8px/1 ui-monospace,Consolas,monospace;color:#7c8f85;letter-spacing:.08em}
+  td.time{width:48px;font:600 10px/1.4 ui-monospace,Consolas,monospace;color:#1b2b33}
+  td.room{width:54px;text-align:right;font:500 9px/1.4 ui-monospace,Consolas,monospace;color:#597067}
+  .now{position:relative;background:linear-gradient(transparent 58%,#d9e36b 58%,#d9e36b 94%,transparent 94%)}
+  .now:after{content:"NOW";position:absolute;right:0;top:-1px;font:700 7px/1 ui-monospace,Consolas,monospace;color:#c4472d}
+  .note{display:grid;grid-template-columns:1fr 58px;gap:8px;padding:7px 0;border-bottom:1px dashed #aeb9b1}
+  .note b{font-size:11px;line-height:1.35;font-weight:600}
+  .note small{display:block;margin-top:2px;font:500 9px/1.35 ui-monospace,Consolas,monospace;color:#597067}
+  .stamp{height:22px;display:grid;place-items:center;border:1px solid #c4472d;color:#c4472d;font:700 8px/1 ui-monospace,Consolas,monospace;letter-spacing:.08em;transform:rotate(-2deg);background:rgba(196,71,45,.04)}
+  .stamp.soft{border-color:#1b2b33;color:#1b2b33;transform:rotate(1deg)}
+  .sync{margin-top:auto;display:flex;align-items:center;justify-content:space-between;font:500 9px/1.4 ui-monospace,Consolas,monospace;color:#597067;border-top:1px solid #1b2b33;padding:7px 0}
+  .sync b{font-weight:700;color:#1b2b33}
+  nav{height:62px;border-top:2px solid #1b2b33;display:flex;padding:0 6px;background:#e6e8e1}
+  nav div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font:600 8px/1 ui-monospace,Consolas,monospace;color:#7c8f85}
+  nav .on{color:#1b2b33;border-top:3px solid #c4472d;margin-top:-2px;background:linear-gradient(#fff6,transparent)}
+  nav i{width:14px;height:14px;border:1.5px solid currentColor;display:block}
+  nav .on i{background:#1b2b33}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <header>
+    <h1>校园助手</h1>
+    <div class="meta">10.25 SAT · 第 8 周 · 10:05</div>
+    <div class="rule"><span>STUDENT LOG / DAILY SHEET</span><i></i><span>01</span></div>
+  </header>
+  <main>
+    <div class="rail"><span>01</span><span>02</span><span>03</span><span>04</span></div>
+    <div class="content">
+      <section class="section">
+        <div class="sec-head"><b>01 / 今日课程</b><span>3 节</span></div>
+        <table>
+          <tr><th>时间</th><th>课程</th><th>地点</th></tr>
+          <tr class="now"><td class="time">08:00</td><td>高等数学 A2</td><td class="room">明德楼 101</td></tr>
+          <tr><td class="time">10:00</td><td>大学物理 B2</td><td class="room">理科楼 203</td></tr>
+          <tr><td class="time">14:00</td><td>复变函数与积分变换 B</td><td class="room">线上</td></tr>
+        </table>
+      </section>
+      <section class="section">
+        <div class="sec-head"><b>02 / 截止批注</b><span>2 项未交</span></div>
+        <div class="note"><div><b>文学经典 · 随堂练习</b><small>10-28 04:42 · 剩 2 天 18 小时</small></div><div class="stamp">待交 01</div></div>
+        <div class="note"><div><b>大学物理 B2 · 作业</b><small>10-29 23:59 · 剩 4 天 13 小时</small></div><div class="stamp soft">待交 02</div></div>
+        <div class="note"><div><b>复变函数 · 3.2 练习</b><small>10-25 23:59 · 今天</small></div><div class="stamp">今天</div></div>
+      </section>
+      <section class="section">
+        <div class="sec-head"><b>03 / 同步记录</b><span>READ-ONLY</span></div>
+        <div class="sync"><span>学习通 · 作业/考试/随堂练习</span><b>17:12 已同步</b></div>
+      </section>
+    </div>
+  </main>
+  <nav><div class="on"><i></i>首页</div><div><i></i>课表</div><div><i></i>Deadline</div><div><i></i>学习通</div><div><i></i>设置</div></nav>
+</div>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390,initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:390px;height:844px;overflow:hidden}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f6f4ef;color:#111827}
+  .app{height:844px;display:flex;flex-direction:column}
+  header{padding:22px 20px 10px;display:flex;justify-content:space-between;align-items:flex-start}
+  h1{font-size:28px;line-height:1;font-weight:800;letter-spacing:-.03em}
+  .date{font:600 10px/1.4 ui-monospace,Consolas,monospace;color:#6b7280;text-align:right}
+  .hero{margin:6px 20px 0;background:#fff;border-radius:20px;padding:18px;box-shadow:0 1px 2px rgba(17,24,39,.05);border:1px solid #ebe7de}
+  .hero .eyebrow{font:700 9px/1 ui-monospace,Consolas,monospace;letter-spacing:.14em;color:#6b7280}
+  .hero h2{margin-top:7px;font-size:21px;line-height:1.15;font-weight:800}
+  .hero p{margin-top:6px;font-size:11px;line-height:1.45;color:#6b7280}
+  .hero button{margin-top:12px;border:0;border-radius:999px;background:#2563eb;color:#fff;font:700 11px/1 -apple-system,"PingFang SC",sans-serif;padding:11px 16px}
+  main{flex:1;padding:12px 20px 0;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+  .rowhead{display:flex;justify-content:space-between;align-items:baseline;margin-top:4px}
+  .rowhead b{font-size:13px;font-weight:800}
+  .rowhead span{font:600 10px/1 ui-monospace,Consolas,monospace;color:#2563eb}
+  .card{background:#fff;border-radius:16px;padding:13px 14px;border:1px solid #ebe7de;display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+  .card h3{font-size:14px;line-height:1.3;font-weight:700}
+  .card p{margin-top:4px;font-size:10px;line-height:1.4;color:#6b7280}
+  .card .when{font:700 10px/1.35 ui-monospace,Consolas,monospace;color:#ea580c;text-align:right;white-space:nowrap}
+  .card .when.blue{color:#2563eb}
+  .sync{display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:16px;padding:12px 14px;border:1px solid #ebe7de;font-size:10px;color:#6b7280}
+  .sync b{color:#111827;font-size:11px}
+  nav{height:66px;border-top:1px solid #e5e1d8;display:flex;padding:0 8px;background:#f6f4ef}
+  nav div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font:600 8px/1 -apple-system,"PingFang SC",sans-serif;color:#9ca3af}
+  nav .on{color:#2563eb}
+  nav i{width:16px;height:16px;border:1.7px solid currentColor;border-radius:5px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>校园助手</h1><div class="date">10.25 周六<br>第 8 周</div></header>
+  <section class="hero">
+    <div class="eyebrow">今天 · 3 节课</div>
+    <h2>08:00 高等数学 A2</h2>
+    <p>明德楼 101 · 张老师 · 下一节 10:00 大学物理 B2</p>
+    <button>查看今日课表</button>
+  </section>
+  <main>
+    <div class="rowhead"><b>即将到期</b><span>查看全部</span></div>
+    <div class="card"><div><h3>文学经典 · 随堂练习</h3><p>文学经典与影视再现 4 · 剩 2 天 18 小时</p></div><div class="when">10-28<br>04:42</div></div>
+    <div class="card"><div><h3>大学物理 B2 · 作业</h3><p>剩 4 天 13 小时</p></div><div class="when">10-29<br>23:59</div></div>
+    <div class="sync"><span><b>学习通</b> · 作业 / 考试 / 随堂练习</span><span>17:12 已同步</span></div>
+  </main>
+  <nav><div class="on"><i></i>首页</div><div><i></i>课表</div><div><i></i>Deadline</div><div><i></i>学习通</div><div><i></i>设置</div></nav>
+</div>
+</body>
+</html>

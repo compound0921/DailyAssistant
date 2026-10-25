@@ -1,0 +1,2073 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+
+import '../data/deadline_repository.dart';
+import '../data/timetable_repository.dart';
+import '../import/period_times.dart';
+import '../jiaowu/jiaowu_exam_merge.dart';
+import '../jiaowu/jiaowu_models.dart';
+import '../jiaowu/jiaowu_service.dart';
+import '../jiaowu/schedule_adjustments.dart';
+import '../models/deadline.dart';
+import '../models/timetable.dart';
+import '../models/timetable_appearance.dart';
+import '../models/timetable_store.dart';
+import '../xuexitong/xuexitong_deadline_mapper.dart';
+import '../xuexitong/xuexitong_service.dart';
+import 'app_theme.dart';
+import 'course_edit_page.dart';
+import 'deadline_colors.dart';
+import 'deadline_edit_page.dart';
+import 'deadline_section.dart';
+import 'exam_edit_page.dart';
+import 'import_page.dart';
+import 'settings_page.dart';
+import 'swipe_action_row.dart';
+import 'sync_page.dart';
+import 'timetable_format.dart';
+import 'timetable_share_page.dart';
+import 'week_view.dart';
+
+enum _HomeSection { home, timetable, deadlines, sync, settings }
+
+class HomePage extends StatefulWidget {
+  const HomePage({
+    super.key,
+    required this.repository,
+    required this.deadlineRepository,
+    required this.themeMode,
+    required this.onThemeModeChanged,
+    required this.appearance,
+    required this.onAppearanceChanged,
+    this.initialStore = TimetableStore.empty,
+    this.initialDeadlines = const [],
+  });
+
+  final TimetableRepository repository;
+  final DeadlineRepository deadlineRepository;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+  final TimetableAppearance appearance;
+  final ValueChanged<TimetableAppearance> onAppearanceChanged;
+  final TimetableStore initialStore;
+  final List<Deadline> initialDeadlines;
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  late TimetableStore _store;
+  late List<Deadline> _deadlines;
+  _HomeSection _section = _HomeSection.home;
+  final XuexitongService _xuexitongService = XuexitongService();
+  final JiaowuService _jiaowuService = JiaowuService();
+  bool _autoSyncRunning = false;
+  bool _autoSyncJiaowuRunning = false;
+  SyncTarget _syncTarget = SyncTarget.xuexitong;
+  List<JiaowuMessage> _jiaowuMessages = const [];
+  List<JiaowuExam> _jiaowuExams = const [];
+  Timer? _clockTimer;
+
+  static const Duration _autoSyncInterval = Duration(minutes: 5);
+
+  @override
+  void initState() {
+    super.initState();
+    _store = widget.initialStore;
+    _deadlines = widget.initialDeadlines;
+    _loadJiaowuSnapshot();
+    unawaited(_cleanupJiaowuDeadlines());
+    _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // 两个来源都会改写同一份 Deadline 列表，串行执行避免合并结果互相覆盖。
+      await _autoSyncXuexitong();
+      // 调试版忽略 5 分钟冷却，便于反复验证教务页面。
+      await _autoSyncJiaowu(force: kDebugMode);
+    });
+  }
+
+  @override
+  void dispose() {
+    _clockTimer?.cancel();
+    super.dispose();
+  }
+
+  TimetableEntry? get _active => _store.active;
+
+  Future<void> _loadJiaowuSnapshot() async {
+    try {
+      final snapshot = await _jiaowuService.loadSnapshot();
+      if (!mounted) return;
+      setState(() {
+        _jiaowuMessages = snapshot?.messages ?? const [];
+        _jiaowuExams = snapshot?.exams ?? const [];
+      });
+    } catch (_) {
+      // 本地状态读取失败不影响主界面。
+    }
+  }
+
+  /// 旧版本会把教务考试自动写成日程；现在考试只进“考试安排”，
+  /// 启动时清理这些历史自动条目，手动和学习通日程保持不变。
+  Future<void> _cleanupJiaowuDeadlines() async {
+    final filtered = _deadlines
+        .where((item) => item.source != DeadlineSource.jiaowu)
+        .toList();
+    if (filtered.length == _deadlines.length) return;
+    await _persistDeadlines(filtered);
+  }
+
+  void _selectSection(_HomeSection section) {
+    if (_section == section) return;
+    setState(() => _section = section);
+    if (section == _HomeSection.home) {
+      unawaited(_loadJiaowuSnapshot());
+    }
+  }
+
+  void _openTimetable() => _selectSection(_HomeSection.timetable);
+
+  void _openDeadlines() => _selectSection(_HomeSection.deadlines);
+
+  void _openSync(SyncTarget target) {
+    setState(() {
+      _syncTarget = target;
+      _section = _HomeSection.sync;
+    });
+  }
+
+  // ---------- 课表 ----------
+
+  Future<void> _openImport() async {
+    final request = await Navigator.of(context).push<ImportRequest>(
+      MaterialPageRoute(
+        builder: (_) => ImportPage(
+          canReplace: _active != null,
+          periodSchedule: _active?.periodSchedule ?? PeriodSchedule.standard,
+        ),
+      ),
+    );
+    if (request == null || !mounted) return;
+
+    final active = _active;
+    final requestedName = request.name?.trim();
+    final periodSchedule =
+        request.periodSchedule ??
+        active?.periodSchedule ??
+        PeriodSchedule.standard;
+    final TimetableStore updated;
+    if (request.action == ImportAction.replace && active != null) {
+      final replacement = active.copyWith(
+        name: requestedName == null || requestedName.isEmpty
+            ? active.name
+            : requestedName,
+        timetable: request.timetable,
+        periodSchedule: periodSchedule,
+      );
+      updated = TimetableStore(
+        entries: [
+          for (final entry in _store.entries)
+            entry.id == active.id ? replacement : entry,
+        ],
+        activeId: _store.activeId,
+      );
+    } else {
+      final baseName = requestedName == null || requestedName.isEmpty
+          ? suggestedTimetableName(request.timetable)
+          : requestedName;
+      final name = uniqueTimetableName(
+        baseName,
+        _store.entries.map((entry) => entry.name),
+      );
+      updated = _store.adding(
+        TimetableEntry(
+          id: const Uuid().v4(),
+          name: name,
+          timetable: request.timetable,
+          periodSchedule: periodSchedule,
+        ),
+      );
+    }
+
+    if (await _persistStore(updated)) {
+      _showMessage('课表已导入');
+    }
+  }
+
+  Future<void> _openTimetableShare() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => TimetableSharePage(store: _store)),
+    );
+  }
+
+  Future<void> _switchTimetable(String id) async {
+    if (id == _active?.id) return;
+    await _persistStore(_store.withActive(id));
+  }
+
+  Future<void> _deleteActiveTimetable() async {
+    final active = _active;
+    if (active == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除当前课表'),
+        content: Text('将删除「${active.name}」，其他课表会保留，且无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    if (await _persistStore(_store.removing(active.id))) {
+      _showMessage('课表已删除');
+    }
+  }
+
+  // ---------- 学习通 ----------
+
+  Future<bool> _commitXuexitong(XuexitongMergeResult result) async {
+    if (!result.hasChanges) return true;
+    final saved = await _persistDeadlines(result.deadlines);
+    if (saved) _showMessage(_xuexitongSummary(result));
+    return saved;
+  }
+
+  Future<void> _autoSyncXuexitong({
+    bool force = false,
+    bool report = false,
+  }) async {
+    if (_autoSyncRunning) {
+      if (report) _showMessage('正在同步，请稍候');
+      return;
+    }
+    _autoSyncRunning = true;
+    try {
+      final state = await _xuexitongService.loadStoredState();
+      if (!state.hasCredentials && !state.isLoggedIn) {
+        if (report) _showMessage('还没有登录学习通，请先到学习通页面登录');
+        return;
+      }
+
+      final lastSync = state.lastSyncAt;
+      if (!force &&
+          lastSync != null &&
+          DateTime.now().difference(lastSync) < _autoSyncInterval) {
+        return;
+      }
+
+      final result = await _xuexitongService.fetchTasks();
+      final mapping = mapXuexitongTasks(result.tasks);
+      final merged = mergeXuexitongDeadlines(
+        existing: _deadlines,
+        incoming: mapping.deadlines,
+        reconciledCourseNames: result.reconciledCourseNames,
+      );
+      if (!merged.hasChanges) {
+        if (report) _showMessage('学习通已是最新');
+        return;
+      }
+      final saved = await _persistDeadlines(merged.deadlines);
+      if (saved && report) _showMessage(_xuexitongSummary(merged));
+    } on XuexitongException catch (error) {
+      if (report) _showMessage('学习通同步失败：${error.message}');
+    } catch (error) {
+      if (report) _showMessage('学习通同步失败：$error');
+    } finally {
+      _autoSyncRunning = false;
+    }
+  }
+
+  Future<void> _autoSyncJiaowu({
+    bool force = false,
+    bool report = false,
+  }) async {
+    if (_autoSyncJiaowuRunning) {
+      if (report) _showMessage('正在同步教务，请稍候');
+      return;
+    }
+    _autoSyncJiaowuRunning = true;
+    try {
+      final state = await _jiaowuService.loadStoredState();
+      if (!state.hasCredentials && !state.hasSession) {
+        if (report) _showMessage('还没有登录教务，请先到同步页登录');
+        return;
+      }
+
+      final lastSync = state.lastSyncAt;
+      if (!force &&
+          lastSync != null &&
+          DateTime.now().difference(lastSync) < _autoSyncInterval) {
+        return;
+      }
+
+      final result = await _jiaowuService.fetchSnapshot();
+      if (mounted) {
+        setState(() {
+          _jiaowuMessages = result.snapshot.messages;
+          _jiaowuExams = result.snapshot.exams;
+        });
+      }
+      if (report) {
+        _showMessage(
+          '教务同步完成：${result.snapshot.messages.length} 条消息，'
+          '${result.snapshot.exams.length} 场考试',
+        );
+      }
+    } on JiaowuException catch (error) {
+      if (report) _showMessage('教务同步失败：${error.message}');
+    } catch (error) {
+      if (report) _showMessage('教务同步失败：$error');
+    } finally {
+      _autoSyncJiaowuRunning = false;
+    }
+  }
+
+  Future<void> _editJiaowuExam(JiaowuExam exam) async {
+    final result = await Navigator.of(context).push<ExamEditResult>(
+      MaterialPageRoute(builder: (_) => ExamEditPage(exam: exam)),
+    );
+    if (result == null || !mounted) return;
+
+    try {
+      final snapshot = result.restore
+          ? await _jiaowuService.restoreExam(exam.externalId)
+          : await _jiaowuService.saveExamEdit(result.exam!);
+      if (!mounted) return;
+      if (snapshot == null) {
+        _showMessage('还没有考试快照，请先同步教务');
+        return;
+      }
+      setState(() => _jiaowuExams = snapshot.exams);
+      _showMessage(result.restore ? '已恢复默认考试安排' : '考试安排已更新');
+    } catch (error) {
+      if (mounted) _showMessage('保存考试安排失败：$error');
+    }
+  }
+
+  Future<void> _addJiaowuExam() async {
+    final result = await Navigator.of(context).push<ExamEditResult>(
+      MaterialPageRoute(builder: (_) => const ExamEditPage()),
+    );
+    if (result == null || result.exam == null || !mounted) return;
+
+    try {
+      final snapshot = await _jiaowuService.addManualExam(result.exam!);
+      if (!mounted) return;
+      setState(() => _jiaowuExams = snapshot.exams);
+      _showMessage('考试安排已添加');
+    } catch (error) {
+      if (mounted) _showMessage('添加考试安排失败：$error');
+    }
+  }
+
+  Future<void> _deleteJiaowuExam(JiaowuExam exam) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除考试安排'),
+        content: Text(
+          '将删除「${exam.courseName}」。\n\n'
+          '下次同步时，如果教务仍返回且考试未过期，会重新出现。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final snapshot = await _jiaowuService.deleteExam(exam.externalId);
+      if (!mounted) return;
+      if (snapshot == null) {
+        _showMessage('还没有考试快照，请先同步教务');
+        return;
+      }
+      setState(() => _jiaowuExams = snapshot.exams);
+      _showMessage('考试安排已删除');
+    } catch (error) {
+      if (mounted) _showMessage('删除考试安排失败：$error');
+    }
+  }
+
+  Future<void> _refreshFromPull() async {
+    // 串行合并，避免两个来源同时基于旧列表写入。
+    await _autoSyncXuexitong(force: true, report: true);
+    await _autoSyncJiaowu(force: true, report: true);
+  }
+
+  String _xuexitongSummary(XuexitongMergeResult result) {
+    final parts = <String>[
+      if (result.added > 0) '新增 ${result.added}',
+      if (result.updated > 0) '更新 ${result.updated}',
+      if (result.completed > 0) '完成 ${result.completed}',
+      if (result.removed > 0) '清理 ${result.removed}',
+    ];
+    return parts.isEmpty ? '学习通同步完成' : '学习通同步：${parts.join('，')}';
+  }
+
+  Future<bool> _changeSemesterStart(DateTime date) async {
+    final active = _active;
+    if (active == null) return false;
+
+    final normalized = mondayOf(date);
+    if (normalized == active.timetable.semester.startDate) return true;
+
+    final updated = active.timetable.withSemesterStart(normalized);
+    final saved = await _persistStore(_store.replacing(active.id, updated));
+    if (saved) _showMessage('开学日期已更新');
+    return saved;
+  }
+
+  Future<bool> _renameActiveTimetable(String name) async {
+    final active = _active;
+    if (active == null) return false;
+
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return false;
+    if (trimmed == active.name) return true;
+
+    return _persistStore(_store.renaming(active.id, trimmed));
+  }
+
+  Future<void> _changePeriodTime(PeriodTime time) async {
+    final active = _active;
+    if (active == null) return;
+
+    final updatedSchedule = active.periodSchedule.withTime(time);
+    await _persistStore(_store.updatingSchedule(active.id, updatedSchedule));
+  }
+
+  Future<void> _editCourse(Course course) async {
+    final updated = await Navigator.of(context).push<Course>(
+      MaterialPageRoute(builder: (_) => CourseEditPage(course: course)),
+    );
+    if (updated == null || !mounted) return;
+
+    final active = _active;
+    if (active == null) return;
+    final updatedTimetable = active.timetable.withCourse(updated);
+    if (await _persistStore(_store.replacing(active.id, updatedTimetable))) {
+      _showMessage('课程信息已更新');
+    }
+  }
+
+  Future<bool> _persistStore(TimetableStore store) async {
+    try {
+      await widget.repository.saveStore(store);
+      if (!mounted) return false;
+      setState(() => _store = store);
+      return true;
+    } catch (error) {
+      if (!mounted) return false;
+      _showMessage('保存课表失败：$error');
+      return false;
+    }
+  }
+
+  // ---------- Deadline ----------
+
+  Future<void> _createDeadline() async {
+    final created = await Navigator.of(context).push<Deadline>(
+      MaterialPageRoute(
+        builder: (_) =>
+            DeadlineEditPage(courses: _active?.timetable.courses ?? const []),
+      ),
+    );
+    if (created == null || !mounted) return;
+
+    if (await _persistDeadlines([..._deadlines, created])) {
+      _showMessage('日程已添加');
+    }
+  }
+
+  Future<void> _editDeadline(Deadline deadline) async {
+    final updated = await Navigator.of(context).push<Deadline>(
+      MaterialPageRoute(
+        builder: (_) => DeadlineEditPage(
+          courses: _active?.timetable.courses ?? const [],
+          initial: deadline,
+        ),
+      ),
+    );
+    if (updated == null || !mounted) return;
+
+    final next = [
+      for (final item in _deadlines) item.id == updated.id ? updated : item,
+    ];
+    if (await _persistDeadlines(next)) {
+      _showMessage('日程已更新');
+    }
+  }
+
+  Future<void> _deleteDeadline(Deadline deadline) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除日程'),
+        content: Text('将删除「${deadline.title}」，且无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final next = [
+      for (final item in _deadlines)
+        if (item.id != deadline.id) item,
+    ];
+    if (await _persistDeadlines(next)) {
+      _showMessage('日程已删除');
+    }
+  }
+
+  Future<void> _clearExpiredDeadlines(List<Deadline> items) {
+    return _clearDeadlines(items, '已截止');
+  }
+
+  Future<void> _clearCompletedDeadlines(List<Deadline> items) {
+    return _clearDeadlines(items, '已完成');
+  }
+
+  Future<void> _clearDeadlines(List<Deadline> items, String label) async {
+    if (items.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('清除$label日程'),
+        content: Text('将删除 ${items.length} 条$label的日程，且无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final ids = {for (final item in items) item.id};
+    final next = [
+      for (final item in _deadlines)
+        if (!ids.contains(item.id)) item,
+    ];
+    if (await _persistDeadlines(next)) {
+      _showMessage('已清除 ${items.length} 条$label日程');
+    }
+  }
+
+  Future<void> _toggleDeadline(Deadline deadline) async {
+    final updated = deadline.copyWith(
+      completed: !deadline.completed,
+      updatedAt: DateTime.now(),
+    );
+    final next = [
+      for (final item in _deadlines) item.id == updated.id ? updated : item,
+    ];
+    await _persistDeadlines(next);
+  }
+
+  Future<bool> _persistDeadlines(List<Deadline> deadlines) async {
+    try {
+      await widget.deadlineRepository.save(deadlines);
+      if (!mounted) return false;
+      setState(() => _deadlines = deadlines);
+      return true;
+    } catch (error) {
+      if (!mounted) return false;
+      _showMessage('保存日程失败：$error');
+      return false;
+    }
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ---------- 界面 ----------
+
+  @override
+  Widget build(BuildContext context) {
+    final wide = MediaQuery.sizeOf(context).width >= 900;
+    return PopScope(
+      canPop: _section == _HomeSection.home,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _section != _HomeSection.home) {
+          _selectSection(_HomeSection.home);
+        }
+      },
+      child: Scaffold(
+        appBar: _buildAppBar(context),
+        body: wide
+            ? Row(
+                children: [
+                  _buildRail(context),
+                  const VerticalDivider(width: 1),
+                  Expanded(child: _buildBody(context)),
+                ],
+              )
+            : _buildBody(context),
+        bottomNavigationBar: wide ? null : _buildNavigationBar(),
+        floatingActionButton: _section == _HomeSection.deadlines
+            ? FloatingActionButton.extended(
+                onPressed: _createDeadline,
+                icon: const Icon(Icons.add),
+                label: const Text('新增日程'),
+              )
+            : null,
+      ),
+    );
+  }
+
+  NavigationBar _buildNavigationBar() {
+    return NavigationBar(
+      selectedIndex: _section.index,
+      onDestinationSelected: (index) =>
+          _selectSection(_HomeSection.values[index]),
+      destinations: const [
+        NavigationDestination(
+          icon: Icon(Icons.home_outlined),
+          selectedIcon: Icon(Icons.home),
+          label: '首页',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.calendar_month_outlined),
+          selectedIcon: Icon(Icons.calendar_month),
+          label: '课表',
+        ),
+        NavigationDestination(icon: Icon(Icons.checklist_rtl), label: '日程'),
+        NavigationDestination(
+          icon: Icon(Icons.sync_alt),
+          selectedIcon: Icon(Icons.sync),
+          label: '同步',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.settings_outlined),
+          selectedIcon: Icon(Icons.settings),
+          label: '设置',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRail(BuildContext context) {
+    return NavigationRail(
+      selectedIndex: _section.index,
+      onDestinationSelected: (index) =>
+          _selectSection(_HomeSection.values[index]),
+      labelType: NavigationRailLabelType.all,
+      groupAlignment: -0.85,
+      destinations: const [
+        NavigationRailDestination(
+          icon: Icon(Icons.home_outlined),
+          selectedIcon: Icon(Icons.home),
+          label: Text('首页'),
+        ),
+        NavigationRailDestination(
+          icon: Icon(Icons.calendar_month_outlined),
+          selectedIcon: Icon(Icons.calendar_month),
+          label: Text('课表'),
+        ),
+        NavigationRailDestination(
+          icon: Icon(Icons.checklist_rtl),
+          label: Text('日程'),
+        ),
+        NavigationRailDestination(
+          icon: Icon(Icons.sync_alt),
+          selectedIcon: Icon(Icons.sync),
+          label: Text('同步'),
+        ),
+        NavigationRailDestination(
+          icon: Icon(Icons.settings_outlined),
+          selectedIcon: Icon(Icons.settings),
+          label: Text('设置'),
+        ),
+      ],
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar(BuildContext context) {
+    switch (_section) {
+      case _HomeSection.home:
+        return AppBar(
+          title: const Text('校园助手'),
+          actions: [_buildThemeButton()],
+        );
+      case _HomeSection.timetable:
+        return AppBar(
+          title: _buildTimetableTitle(context),
+          actions: [
+            IconButton(
+              onPressed: _openTimetableShare,
+              tooltip: '课表导出口令',
+              icon: const Icon(Icons.file_upload_outlined),
+            ),
+            IconButton(
+              onPressed: _openImport,
+              tooltip: '导入课表',
+              icon: const Icon(Icons.file_download_outlined),
+            ),
+            if (_active != null)
+              IconButton(
+                onPressed: _deleteActiveTimetable,
+                tooltip: '删除当前课表',
+                icon: const Icon(Icons.delete_outline),
+              ),
+            _buildThemeButton(),
+          ],
+        );
+      case _HomeSection.deadlines:
+        return AppBar(title: const Text('日程'), actions: [_buildThemeButton()]);
+      case _HomeSection.sync:
+        return AppBar(title: const Text('同步'), actions: [_buildThemeButton()]);
+      case _HomeSection.settings:
+        return AppBar(title: const Text('设置'), actions: [_buildThemeButton()]);
+    }
+  }
+
+  Widget _buildThemeButton() {
+    return IconButton(
+      onPressed: () =>
+          widget.onThemeModeChanged(_nextThemeMode(widget.themeMode)),
+      tooltip: '主题：${_themeModeLabel(widget.themeMode)}（点击切换）',
+      icon: Icon(_themeModeIcon(widget.themeMode)),
+    );
+  }
+
+  Widget _buildTimetableTitle(BuildContext context) {
+    final entries = _store.entries;
+    final active = _active;
+    final style = Theme.of(context).textTheme.titleLarge;
+
+    return PopupMenuButton<String>(
+      enabled: entries.length > 1,
+      padding: EdgeInsets.zero,
+      tooltip: entries.length > 1 ? '切换课表' : '课表',
+      onSelected: _switchTimetable,
+      itemBuilder: (_) => [
+        for (final entry in entries)
+          PopupMenuItem(value: entry.id, child: Text(entry.name)),
+      ],
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              active?.name ?? '课表',
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
+          ),
+          if (entries.length > 1) const Icon(Icons.arrow_drop_down),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    final active = _active;
+    switch (_section) {
+      case _HomeSection.home:
+        return _HomeOverview(
+          store: _store,
+          deadlines: _deadlines,
+          onOpenTimetable: _openTimetable,
+          onOpenDeadlines: _openDeadlines,
+          onOpenSync: _openSync,
+          onImport: _openImport,
+          onRefresh: _refreshFromPull,
+          jiaowuMessages: _jiaowuMessages,
+          jiaowuExams: _jiaowuExams,
+          onAddExam: _addJiaowuExam,
+          onEditExam: _editJiaowuExam,
+          onDeleteExam: _deleteJiaowuExam,
+          onEditDeadline: _editDeadline,
+          onDeleteDeadline: _deleteDeadline,
+        );
+      case _HomeSection.timetable:
+        if (active == null || active.timetable.isEmpty) {
+          return _EmptyView(onImport: _openImport);
+        }
+        return WeekTimetableView(
+          timetable: active.timetable,
+          periodSchedule: active.periodSchedule,
+          appearance: widget.appearance,
+          onPeriodTimeChanged: _changePeriodTime,
+          onEditCourse: _editCourse,
+          jiaowuMessages: _jiaowuMessages,
+          onImport: () => _openImport(),
+          onDeleteTimetable: () => _deleteActiveTimetable(),
+        );
+      case _HomeSection.deadlines:
+        return DeadlineSection(
+          deadlines: _deadlines,
+          onCreate: _createDeadline,
+          onEdit: _editDeadline,
+          onDelete: _deleteDeadline,
+          onToggle: _toggleDeadline,
+          onClearExpired: _clearExpiredDeadlines,
+          onClearCompleted: _clearCompletedDeadlines,
+        );
+      case _HomeSection.sync:
+        return SyncPage(
+          xuexitongService: _xuexitongService,
+          jiaowuService: _jiaowuService,
+          existingDeadlines: _deadlines,
+          onCommitXuexitong: _commitXuexitong,
+          initialTarget: _syncTarget,
+        );
+      case _HomeSection.settings:
+        return SettingsPage(
+          key: ValueKey('settings-${active?.id ?? 'none'}'),
+          embedded: true,
+          timetable: active?.timetable,
+          timetableName: active?.name,
+          appearance: widget.appearance,
+          onAppearanceChanged: widget.onAppearanceChanged,
+          onSemesterStartChanged: _changeSemesterStart,
+          onTimetableRenamed: _renameActiveTimetable,
+          themeMode: widget.themeMode,
+          onThemeModeChanged: widget.onThemeModeChanged,
+        );
+    }
+  }
+}
+
+class _HomeOverview extends StatelessWidget {
+  const _HomeOverview({
+    required this.store,
+    required this.deadlines,
+    required this.onOpenTimetable,
+    required this.onOpenDeadlines,
+    required this.onOpenSync,
+    required this.onImport,
+    required this.onRefresh,
+    required this.jiaowuMessages,
+    required this.jiaowuExams,
+    required this.onAddExam,
+    required this.onEditExam,
+    required this.onDeleteExam,
+    required this.onEditDeadline,
+    required this.onDeleteDeadline,
+  });
+
+  final TimetableStore store;
+  final List<Deadline> deadlines;
+  final VoidCallback onOpenTimetable;
+  final VoidCallback onOpenDeadlines;
+  final ValueChanged<SyncTarget> onOpenSync;
+  final VoidCallback onImport;
+  final Future<void> Function() onRefresh;
+  final List<JiaowuMessage> jiaowuMessages;
+  final List<JiaowuExam> jiaowuExams;
+  final VoidCallback onAddExam;
+  final ValueChanged<JiaowuExam> onEditExam;
+  final ValueChanged<JiaowuExam> onDeleteExam;
+  final ValueChanged<Deadline> onEditDeadline;
+  final ValueChanged<Deadline> onDeleteDeadline;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final active = store.active;
+    final timetable = active?.timetable;
+    final week = timetable?.semester.weekOf(now) ?? 0;
+    final inTerm =
+        timetable != null && week >= 1 && week <= timetable.semester.weekCount;
+    final adjustments = timetable == null
+        ? const <ScheduleAdjustment>[]
+        : parseScheduleAdjustments(
+            messages: jiaowuMessages,
+            timetable: timetable,
+            periodSchedule: active!.periodSchedule,
+          );
+    final todayMeetings = inTerm
+        ? effectiveMeetingsForWeek(
+            timetable: timetable,
+            periodSchedule: active!.periodSchedule,
+            adjustments: adjustments,
+            week: week,
+          ).where((item) => item.meeting.weekday == now.weekday).toList()
+        : <EffectiveMeeting>[];
+    final nowMinutes = now.hour * 60 + now.minute;
+    EffectiveMeeting? nextMeeting;
+    for (final item in todayMeetings) {
+      if (!item.cancelled && item.meeting.endMinute > nowMinutes) {
+        nextMeeting = item;
+        break;
+      }
+    }
+    final hasAnyToday = todayMeetings.isNotEmpty;
+    final hasActiveToday = todayMeetings.any((item) => !item.cancelled);
+    final groups = groupDeadlines(deadlines, now: now);
+    final nearest = groups.incomplete.take(3).toList();
+    final homeExams = homeVisibleExams(exams: jiaowuExams, now: now);
+
+    final left = <Widget>[
+      _HomeDateHeader(now: now, week: week, inTerm: inTerm),
+      const SizedBox(height: AppSpacing.lg),
+      _TodayHero(
+        active: active,
+        nextMeeting: nextMeeting,
+        week: week,
+        inTerm: inTerm,
+        hasAnyToday: hasAnyToday,
+        hasActiveToday: hasActiveToday,
+        nowMinutes: nowMinutes,
+        onOpenTimetable: onOpenTimetable,
+        onImport: onImport,
+      ),
+      if (todayMeetings.isNotEmpty) ...[
+        const SizedBox(height: AppSpacing.md),
+        _TodayTimeline(
+          meetings: todayMeetings,
+          nowMinutes: nowMinutes,
+          onTap: onOpenTimetable,
+        ),
+      ],
+    ];
+    final right = <Widget>[
+      _HomeDeadlinePreview(
+        items: nearest,
+        now: now,
+        onOpenAll: onOpenDeadlines,
+        onEdit: onEditDeadline,
+        onDelete: onDeleteDeadline,
+      ),
+      const SizedBox(height: AppSpacing.md),
+      _HomeExamPreview(
+        exams: homeExams,
+        now: now,
+        onOpenAll: () => onOpenSync(SyncTarget.jiaowu),
+        onAddExam: onAddExam,
+        onEditExam: onEditExam,
+        onDeleteExam: onDeleteExam,
+      ),
+    ];
+
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= 900;
+          final content = wide
+              ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: left,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.xl),
+                    Expanded(
+                      flex: 2,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: right,
+                      ),
+                    ),
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ...left,
+                    const SizedBox(height: AppSpacing.xl),
+                    ...right,
+                  ],
+                );
+
+          return SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.sm,
+              AppSpacing.lg,
+              96,
+            ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1120),
+                child: content,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _HomeDateHeader extends StatelessWidget {
+  const _HomeDateHeader({
+    required this.now,
+    required this.week,
+    required this.inTerm,
+  });
+
+  final DateTime now;
+  final int week;
+  final bool inTerm;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${now.month}月${now.day}日',
+              style: theme.textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '${weekdayLabel(now.weekday)} · ${inTerm ? '第 $week 周' : '不在学期范围'}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+        const Spacer(),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(
+            '今天',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onPrimaryContainer,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TodayHero extends StatelessWidget {
+  const _TodayHero({
+    required this.active,
+    required this.nextMeeting,
+    required this.week,
+    required this.inTerm,
+    required this.hasAnyToday,
+    required this.hasActiveToday,
+    required this.nowMinutes,
+    required this.onOpenTimetable,
+    required this.onImport,
+  });
+
+  final TimetableEntry? active;
+  final EffectiveMeeting? nextMeeting;
+  final int week;
+  final bool inTerm;
+  final bool hasAnyToday;
+  final bool hasActiveToday;
+  final int nowMinutes;
+  final VoidCallback onOpenTimetable;
+  final VoidCallback onImport;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    final cardColor = dark
+        ? theme.colorScheme.primaryContainer
+        : theme.colorScheme.primaryContainer.withValues(alpha: 0.72);
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(20),
+      side: BorderSide(
+        color: theme.colorScheme.primary.withValues(alpha: 0.18),
+      ),
+    );
+
+    if (active == null) {
+      return Card(
+        color: cardColor,
+        shape: shape,
+        child: InkWell(
+          onTap: onImport,
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _HeroIcon(icon: Icons.calendar_month_outlined),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('还没有课表', style: theme.textTheme.titleLarge),
+                      const SizedBox(height: 4),
+                      Text(
+                        '导入 ICS 或正方课表，首页就会显示今天课程。',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      FilledButton.icon(
+                        onPressed: onImport,
+                        icon: const Icon(Icons.file_download_outlined),
+                        label: const Text('导入课表'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final next = nextMeeting;
+    if (next == null) {
+      final allCancelled = inTerm && hasAnyToday && !hasActiveToday;
+      final ended = inTerm && hasActiveToday;
+      final icon = allCancelled
+          ? Icons.block
+          : ended
+          ? Icons.check_circle_outline
+          : Icons.event_busy_outlined;
+      final title = allCancelled
+          ? '今天的课已停课'
+          : ended
+          ? '今天的课已结束'
+          : '今天没有课';
+      return Card(
+        child: InkWell(
+          onTap: onOpenTimetable,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(
+              children: [
+                Icon(icon, size: 20, color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: theme.textTheme.titleMedium),
+                      const SizedBox(height: 2),
+                      Text(
+                        inTerm ? '第 $week 周 · 查看本周课表' : '设置开学日期后显示周次',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right,
+                  size: 20,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final meeting = next.meeting;
+    final course = next.course;
+    final ongoing = meeting.startMinute <= nowMinutes;
+    final details = [
+      next.location,
+      next.teacher,
+    ].whereType<String>().where((value) => value.trim().isNotEmpty).join(' · ');
+
+    return Card(
+      color: cardColor,
+      shape: shape,
+      child: InkWell(
+        onTap: onOpenTimetable,
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        ongoing ? '正在上' : '下一节',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                      if (next.label != null) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary.withValues(
+                              alpha: 0.12,
+                            ),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            next.label!,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.primary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    formatMinutes(meeting.startMinute),
+                    style: tabularFigures(
+                      theme.textTheme.headlineMedium,
+                    ).copyWith(color: theme.colorScheme.primary),
+                  ),
+                  Text(
+                    '至 ${formatMinutes(meeting.endMinute)}',
+                    style: tabularFigures(
+                      theme.textTheme.bodySmall,
+                    ).copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+              const SizedBox(width: AppSpacing.lg),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      course.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleLarge,
+                    ),
+                    if (details.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        details,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 6),
+                    TextButton(
+                      onPressed: onOpenTimetable,
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        minimumSize: const Size(0, 36),
+                        alignment: Alignment.centerLeft,
+                      ),
+                      child: const Text('查看课表 →'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HeroIcon extends StatelessWidget {
+  const _HeroIcon({required this.icon});
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.8),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Icon(icon, color: theme.colorScheme.primary, size: 25),
+    );
+  }
+}
+
+class _TodayTimeline extends StatelessWidget {
+  const _TodayTimeline({
+    required this.meetings,
+    required this.nowMinutes,
+    required this.onTap,
+  });
+
+  final List<EffectiveMeeting> meetings;
+  final int nowMinutes;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.md,
+          AppSpacing.lg,
+          AppSpacing.xs,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text('今天的课', style: theme.textTheme.titleMedium),
+                const Spacer(),
+                Text(
+                  '${meetings.length} 节',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            for (var index = 0; index < meetings.length; index++) ...[
+              _TodayTimelineRow(
+                effective: meetings[index],
+                nowMinutes: nowMinutes,
+                onTap: onTap,
+              ),
+              if (index < meetings.length - 1)
+                Divider(
+                  height: 1,
+                  indent: 60,
+                  color: theme.colorScheme.outlineVariant,
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TodayTimelineRow extends StatelessWidget {
+  const _TodayTimelineRow({
+    required this.effective,
+    required this.nowMinutes,
+    required this.onTap,
+  });
+
+  final EffectiveMeeting effective;
+  final int nowMinutes;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final meeting = effective.meeting;
+    final course = effective.course;
+    final ongoing =
+        !effective.cancelled &&
+        meeting.startMinute <= nowMinutes &&
+        meeting.endMinute > nowMinutes;
+    final past = meeting.endMinute <= nowMinutes;
+    final details = [
+      effective.location,
+      effective.teacher,
+    ].whereType<String>().where((value) => value.trim().isNotEmpty).join(' · ');
+    final primaryColor = theme.colorScheme.primary;
+    final mutedColor = theme.colorScheme.onSurfaceVariant;
+    final barColor = effective.cancelled
+        ? theme.colorScheme.outlineVariant
+        : effective.added || ongoing
+        ? primaryColor
+        : theme.colorScheme.outlineVariant;
+    final titleColor = effective.cancelled || past
+        ? mutedColor
+        : theme.colorScheme.onSurface;
+    final label = effective.label;
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 48,
+              child: Text(
+                formatMinutes(meeting.startMinute),
+                style: tabularFigures(theme.textTheme.bodySmall).copyWith(
+                  color: ongoing && !effective.cancelled
+                      ? primaryColor
+                      : mutedColor,
+                  fontWeight: ongoing && !effective.cancelled
+                      ? FontWeight.w700
+                      : FontWeight.w500,
+                ),
+              ),
+            ),
+            Container(
+              width: 3,
+              height: 30,
+              decoration: BoxDecoration(
+                color: barColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    course.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: titleColor,
+                      decoration: effective.cancelled
+                          ? TextDecoration.lineThrough
+                          : null,
+                    ),
+                  ),
+                  if (details.isNotEmpty)
+                    Text(
+                      details,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: mutedColor,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (label != null)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: effective.cancelled
+                      ? theme.colorScheme.surfaceContainerHighest
+                      : theme.colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  label,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: effective.cancelled
+                        ? theme.colorScheme.onSurfaceVariant
+                        : theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              )
+            else if (ongoing)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '进行中',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeDeadlinePreview extends StatelessWidget {
+  const _HomeDeadlinePreview({
+    required this.items,
+    required this.now,
+    required this.onOpenAll,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final List<Deadline> items;
+  final DateTime now;
+  final VoidCallback onOpenAll;
+  final ValueChanged<Deadline> onEdit;
+  final ValueChanged<Deadline> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cardColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text('日程', style: theme.textTheme.titleMedium),
+            const Spacer(),
+            TextButton(onPressed: onOpenAll, child: const Text('查看全部')),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Card(
+          child: items.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    AppSpacing.md,
+                    AppSpacing.lg,
+                    AppSpacing.md,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.check_circle_outline,
+                        color: theme.colorScheme.onSurfaceVariant,
+                        size: 20,
+                      ),
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(
+                        child: Text(
+                          '没有待办，先享受一下。',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: onOpenAll,
+                        child: const Text('去添加'),
+                      ),
+                    ],
+                  ),
+                )
+              : Column(
+                  children: [
+                    for (var index = 0; index < items.length; index++) ...[
+                      SwipeActionRow(
+                        backgroundColor: cardColor,
+                        actions: [
+                          SwipeAction(
+                            label: '编辑',
+                            icon: Icons.edit_outlined,
+                            backgroundColor: theme.colorScheme.primaryContainer,
+                            foregroundColor:
+                                theme.colorScheme.onPrimaryContainer,
+                            onPressed: () => onEdit(items[index]),
+                          ),
+                          SwipeAction(
+                            label: '删除',
+                            icon: Icons.delete_outline,
+                            backgroundColor: theme.colorScheme.errorContainer,
+                            foregroundColor: theme.colorScheme.onErrorContainer,
+                            onPressed: () => onDelete(items[index]),
+                          ),
+                        ],
+                        child: _HomeDeadlineRow(
+                          deadline: items[index],
+                          now: now,
+                          onTap: onOpenAll,
+                        ),
+                      ),
+                      if (index < items.length - 1)
+                        Divider(
+                          height: 1,
+                          indent: 16,
+                          color: theme.colorScheme.outlineVariant,
+                        ),
+                    ],
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HomeDeadlineRow extends StatelessWidget {
+  const _HomeDeadlineRow({
+    required this.deadline,
+    required this.now,
+    required this.onTap,
+  });
+
+  final Deadline deadline;
+  final DateTime now;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final urgency = deadlineUrgency(deadline, now: now);
+    final urgencyColor = deadlineUrgencyColor(urgency, theme);
+    final urgencyTextColor = deadlineUrgencyTextColor(urgency, theme);
+    final course = deadline.courseName;
+    final remaining = formatRemaining(deadline.dueAt, now: now);
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 4,
+              height: 38,
+              decoration: BoxDecoration(
+                color: urgencyColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    deadline.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    [?course, remaining].join(' · '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: urgencyTextColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  formatMonthDay(deadline.dueAt),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  formatMinutes(
+                    deadline.dueAt.hour * 60 + deadline.dueAt.minute,
+                  ),
+                  style: tabularFigures(
+                    theme.textTheme.labelSmall,
+                  ).copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeExamPreview extends StatelessWidget {
+  const _HomeExamPreview({
+    required this.exams,
+    required this.now,
+    required this.onOpenAll,
+    required this.onAddExam,
+    required this.onEditExam,
+    required this.onDeleteExam,
+  });
+
+  final List<JiaowuExam> exams;
+  final DateTime now;
+  final VoidCallback onOpenAll;
+  final VoidCallback onAddExam;
+  final ValueChanged<JiaowuExam> onEditExam;
+  final ValueChanged<JiaowuExam> onDeleteExam;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cardColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final visible = exams.take(3).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text('考试安排', style: theme.textTheme.titleMedium),
+            const Spacer(),
+            TextButton(onPressed: onAddExam, child: const Text('添加')),
+            TextButton(onPressed: onOpenAll, child: const Text('查看全部')),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Card(
+          child: visible.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    AppSpacing.md,
+                    AppSpacing.lg,
+                    AppSpacing.md,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.event_note_outlined,
+                        color: theme.colorScheme.onSurfaceVariant,
+                        size: 20,
+                      ),
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(
+                        child: Text(
+                          '暂无考试安排',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : Column(
+                  children: [
+                    for (var index = 0; index < visible.length; index++) ...[
+                      SwipeActionRow(
+                        backgroundColor: cardColor,
+                        actions: [
+                          SwipeAction(
+                            label: '编辑',
+                            icon: Icons.edit_outlined,
+                            backgroundColor: theme.colorScheme.primaryContainer,
+                            foregroundColor:
+                                theme.colorScheme.onPrimaryContainer,
+                            onPressed: () => onEditExam(visible[index]),
+                          ),
+                          SwipeAction(
+                            label: '删除',
+                            icon: Icons.delete_outline,
+                            backgroundColor: theme.colorScheme.errorContainer,
+                            foregroundColor: theme.colorScheme.onErrorContainer,
+                            onPressed: () => onDeleteExam(visible[index]),
+                          ),
+                        ],
+                        child: _HomeExamRow(
+                          exam: visible[index],
+                          now: now,
+                          onTap: () => onEditExam(visible[index]),
+                        ),
+                      ),
+                      if (index < visible.length - 1)
+                        Divider(
+                          height: 1,
+                          indent: 16,
+                          color: theme.colorScheme.outlineVariant,
+                        ),
+                    ],
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HomeExamRow extends StatelessWidget {
+  const _HomeExamRow({
+    required this.exam,
+    required this.now,
+    required this.onTap,
+  });
+
+  final JiaowuExam exam;
+  final DateTime now;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final urgency = _examUrgency(exam, now);
+    final urgencyColor = _examUrgencyColor(urgency, theme);
+    final urgencyTextColor = _examUrgencyTextColor(urgency, theme);
+    final ongoing = urgency == _ExamUrgency.ongoing;
+    final expired = urgency == _ExamUrgency.expired;
+    final remaining = ongoing ? '进行中' : formatRemaining(exam.startAt, now: now);
+    final details = [
+      exam.location,
+      exam.campus,
+      exam.examType,
+    ].whereType<String>().where((value) => value.trim().isNotEmpty).join(' · ');
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 50,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    formatMonthDay(exam.startAt),
+                    style: tabularFigures(
+                      theme.textTheme.titleSmall,
+                    ).copyWith(color: urgencyTextColor),
+                  ),
+                  Text(
+                    weekdayLabel(exam.startAt.weekday),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              width: 3,
+              height: 44,
+              decoration: BoxDecoration(
+                color: urgencyColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    exam.courseName,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: expired
+                          ? theme.colorScheme.onSurfaceVariant
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${formatMinutes(exam.startAt.hour * 60 + exam.startAt.minute)}'
+                    '–${formatMinutes(exam.endAt.hour * 60 + exam.endAt.minute)}'
+                    '${details.isEmpty ? '' : ' · $details'}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    remaining,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: urgencyTextColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Icon(
+              Icons.edit_outlined,
+              size: 16,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _ExamUrgency { ongoing, today, soon, week, later, expired }
+
+_ExamUrgency _examUrgency(JiaowuExam exam, DateTime now) {
+  if (!exam.endAt.isAfter(now)) return _ExamUrgency.expired;
+  if (!exam.startAt.isAfter(now)) return _ExamUrgency.ongoing;
+
+  final today = DateTime(now.year, now.month, now.day);
+  final startDay = DateTime(
+    exam.startAt.year,
+    exam.startAt.month,
+    exam.startAt.day,
+  );
+  final days = startDay.difference(today).inDays;
+  if (days <= 0) return _ExamUrgency.today;
+  if (days <= 3) return _ExamUrgency.soon;
+  if (days <= 7) return _ExamUrgency.week;
+  return _ExamUrgency.later;
+}
+
+Color _examUrgencyColor(_ExamUrgency urgency, ThemeData theme) {
+  return switch (urgency) {
+    _ExamUrgency.ongoing || _ExamUrgency.today => theme.colorScheme.error,
+    _ExamUrgency.soon => deadlineUrgencyColor(DeadlineUrgency.soon, theme),
+    _ExamUrgency.week => deadlineUrgencyColor(DeadlineUrgency.today, theme),
+    _ExamUrgency.later => theme.colorScheme.primary,
+    _ExamUrgency.expired => theme.colorScheme.onSurfaceVariant,
+  };
+}
+
+Color _examUrgencyTextColor(_ExamUrgency urgency, ThemeData theme) {
+  return switch (urgency) {
+    _ExamUrgency.ongoing || _ExamUrgency.today => theme.colorScheme.error,
+    _ExamUrgency.soon => deadlineUrgencyTextColor(DeadlineUrgency.soon, theme),
+    _ExamUrgency.week => deadlineUrgencyTextColor(DeadlineUrgency.today, theme),
+    _ExamUrgency.later => deadlineUrgencyTextColor(DeadlineUrgency.week, theme),
+    _ExamUrgency.expired => theme.colorScheme.onSurfaceVariant,
+  };
+}
+
+class _EmptyView extends StatelessWidget {
+  const _EmptyView({required this.onImport});
+
+  final VoidCallback onImport;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.calendar_month_outlined,
+                size: 72,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(height: 16),
+              Text('还没有课表', style: theme.textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              Text(
+                '导入 ICS 文件，或正方教务导出的 HTML / Excel 课表。',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: onImport,
+                icon: const Icon(Icons.file_download_outlined),
+                label: const Text('导入课表'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+ThemeMode _nextThemeMode(ThemeMode mode) {
+  return mode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+}
+
+IconData _themeModeIcon(ThemeMode mode) {
+  return mode == ThemeMode.dark
+      ? Icons.dark_mode_outlined
+      : Icons.light_mode_outlined;
+}
+
+String _themeModeLabel(ThemeMode mode) {
+  return mode == ThemeMode.dark ? '深色' : '浅色';
+}

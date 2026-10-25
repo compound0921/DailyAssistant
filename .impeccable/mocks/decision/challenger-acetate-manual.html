@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390,initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:390px;height:844px;overflow:hidden}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f2f0e9;color:#25302e}
+  .manual{height:844px;display:flex;flex-direction:column;background:#f2f0e9}
+  header{padding:20px 18px 12px 42px;border-bottom:1px solid #b9b4a4;position:relative;background:#f2f0e9}
+  header:before{content:"A";position:absolute;left:12px;top:19px;width:20px;height:20px;display:grid;place-items:center;background:#3b4c9a;color:#fff;font:800 10px/1 ui-monospace,Consolas,monospace}
+  .top{display:flex;justify-content:space-between;font:700 8px/1 ui-monospace,Consolas,monospace;letter-spacing:.16em;color:#7a7a6e}
+  h1{margin-top:6px;font-size:28px;line-height:1.02;font-weight:800;letter-spacing:-.04em}
+  .sub{margin-top:4px;font:500 9px/1.4 ui-monospace,Consolas,monospace;color:#6b6f67}
+  main{flex:1;display:flex;min-height:0}
+  .tabs{width:46px;border-right:1px solid #b9b4a4;display:flex;flex-direction:column;padding-top:10px;gap:4px}
+  .tab{height:38px;display:flex;align-items:center;justify-content:center;font:800 8px/1 ui-monospace,Consolas,monospace;letter-spacing:.06em;color:#fff;opacity:.82}
+  .tab:nth-child(1){background:#d95b2b;height:52px;opacity:1;margin-right:0;border-right:4px solid #f2f0e9}
+  .tab:nth-child(2){background:#d6c63a;color:#25302e}
+  .tab:nth-child(3){background:#2e7d6e}
+  .tab:nth-child(4){background:#3b4c9a}
+  .stage{flex:1;padding:10px 12px 0 10px;position:relative;min-width:0}
+  .board{position:absolute;inset:10px 12px 0 10px;background:linear-gradient(180deg,#d95b2b,#c64f25);opacity:.12}
+  .leaves{position:relative;display:flex;flex-direction:column;gap:10px}
+  .leaf{background:rgba(255,255,255,.74);border:1px solid #b9b4a4;box-shadow:0 1px 0 #b9b4a4;padding:9px 10px}
+  .leaf h2{font:800 10px/1.2 ui-monospace,Consolas,monospace;letter-spacing:.08em;color:#d95b2b;border-bottom:1px solid #b9b4a4;padding-bottom:5px}
+  .row{display:grid;grid-template-columns:44px 1fr 42px;gap:6px;padding:6px 0;border-bottom:1px solid #ddd8cb;font-size:10px}
+  .row .t{font:700 9px/1.3 ui-monospace,Consolas,monospace;color:#25302e}
+  .row .r{text-align:right;font:500 8px/1.3 ui-monospace,Consolas,monospace;color:#6b6f67}
+  .due{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px dashed #b9b4a4}
+  .due b{font-size:10px;line-height:1.35;font-weight:700}
+  .due small{display:block;margin-top:2px;font:500 8px/1.4 ui-monospace,Consolas,monospace;color:#6b6f67}
+  .due span{font:800 8px/1.2 ui-monospace,Consolas,monospace;color:#d95b2b;text-align:right;white-space:nowrap}
+  .legend{margin-top:auto;padding:7px 0;border-top:1px solid #b9b4a4;font:600 8px/1.4 ui-monospace,Consolas,monospace;color:#7a7a6e;display:flex;justify-content:space-between}
+  nav{height:62px;border-top:1px solid #b9b4a4;display:flex;padding:0 6px;background:#f2f0e9}
+  nav div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font:700 8px/1 ui-monospace,Consolas,monospace;color:#8b877b}
+  nav .on{color:#25302e;background:rgba(217,91,43,.1);border-top:3px solid #d95b2b}
+  nav i{width:12px;height:12px;border:1.5px solid currentColor}
+</style>
+</head>
+<body>
+<div class="manual">
+  <header>
+    <div class="top"><span>REFERENCE MANUAL · STUDENT EDITION</span><span>SEC 08</span></div>
+    <h1>校园助手</h1>
+    <div class="sub">SAT 10.25 · 第 8 周 · 10:05 · 学习通 17:12 已同步</div>
+  </header>
+  <main>
+    <div class="tabs"><div class="tab">今<br>日</div><div class="tab">课<br>表</div><div class="tab">截<br>止</div><div class="tab">同<br>步</div></div>
+    <div class="stage">
+      <div class="board"></div>
+      <div class="leaves">
+        <div class="leaf"><h2>01 / TODAY</h2>
+          <div class="row"><span class="t">08:00</span><span>高等数学 A2</span><span class="r">M101</span></div>
+          <div class="row"><span class="t">10:00</span><span>大学物理 B2</span><span class="r">S203</span></div>
+          <div class="row"><span class="t">14:00</span><span>复变函数与积分变换 B</span><span class="r">线上</span></div>
+        </div>
+        <div class="leaf"><h2>02 / DUE</h2>
+          <div class="due"><div><b>文学经典 · 随堂练习</b><small>剩 2 天 18 小时</small></div><span>10-28<br>04:42</span></div>
+          <div class="due"><div><b>大学物理 B2 · 作业</b><small>剩 4 天 13 小时</small></div><span>10-29<br>23:59</span></div>
+        </div>
+        <div class="leaf"><h2>03 / SYNC</h2>
+          <div class="row"><span class="t">17:12</span><span>学习通 · 作业 / 考试 / 随堂练习</span><span class="r">OK</span></div>
+        </div>
+      </div>
+      <div class="legend"><span>SELECTED = PUNCHED HOLE</span><span>READ-ONLY</span></div>
+    </div>
+  </main>
+  <nav><div class="on"><i></i>首页</div><div><i></i>课表</div><div><i></i>Deadline</div><div><i></i>学习通</div><div><i></i>设置</div></nav>
+</div>
+</body>
+</html>

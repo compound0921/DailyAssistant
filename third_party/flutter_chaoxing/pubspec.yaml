@@ -1,0 +1,16 @@
+name: flutter_chaoxing
+description: >-
+  Trimmed vendored subset of flutter_chaoxing 0.4.2. Keeps passport2 login and
+  the read-only student data API; removes check-in, face-sign, captcha, and
+  device user-agent code.
+version: 0.4.2
+publish_to: none
+
+environment:
+  sdk: '>=3.9.0 <4.0.0'
+
+dependencies:
+  charset: ^2.0.1
+  crypto: ^3.0.7
+  dio: ^5.11.0
+  pointycastle: ^4.0.0

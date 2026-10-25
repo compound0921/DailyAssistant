@@ -1,0 +1,136 @@
+{
+  "title": "选择校园助手的视觉世界",
+  "question": "重新设计校园助手：选择要构建的方向。抽签指定「实验记录本」，另有线路图、票夹和醋酸片手册。",
+  "options": [
+    {
+      "id": "assigned-lab-notebook",
+      "kind": "assigned",
+      "label": "实验记录本",
+      "kicker": "THE ROLL",
+      "lineage": "大学实验记录本 / 方格纸 / 日期印章",
+      "thesis": "把每天当作一页实验记录：课程是规则表格，截止是批注与印章。",
+      "palette": ["#E6E8E1", "#1B2B33", "#C4472D", "#D9E36B", "#7C8F85"],
+      "materials": ["方格纸", "墨水批注", "日期印章"],
+      "viewport": "顶部是今天的日期与编号；中间是带时间轴的课程表格；下方是带状态印章的截止批注；底部标准导航。",
+      "risk": "容易显得像实验报告，需要用高亮和印章保留人味。",
+      "raised": [
+        { "from": "operate-c-emission-line-rail", "raise": "状态用线型表达：实线进行中、虚线待办、半高已过期，颜色只做强调。" },
+        { "from": "notation-diagram-systems-star-atlas", "raise": "紧急度用字号与线宽分级，不只靠颜色。" },
+        { "from": "pop-culture-shelf-character-goods-catalog", "raise": "固定名册的顺序感：Deadline 始终按截止时间排序，不因来源打乱。" }
+      ],
+      "html": ".impeccable/mocks/decision/assigned-lab-notebook.html",
+      "htmlFrame": "390x844"
+    },
+    {
+      "id": "model-pick-transit",
+      "kind": "pick",
+      "label": "校园线路图",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "地铁线路图 / 校园导览",
+      "thesis": "把一周画成线路网络：课程是站点，截止是换乘提醒。",
+      "palette": ["#0E1B2A", "#F5C542", "#2BB3A3", "#E4553C", "#F7F4EC"],
+      "materials": ["搪瓷线路板", "站点圆点", "方向标识"],
+      "viewport": "深色线路板上，今天是一条高亮线路，课程是站点，截止是换乘标记；底部标准导航。",
+      "risk": "它最接近“地铁 App”的既有印象，容易被读成通勤工具而不是校园助手。",
+      "html": ".impeccable/mocks/decision/pick-transit-map.html",
+      "htmlFrame": "390x844"
+    },
+    {
+      "id": "challenger-ticket-wallet",
+      "kind": "challenger",
+      "catalogId": "vernacular-ephemera-jet-age-ticket-wallet",
+      "label": "机票票夹",
+      "verdict": "competitive",
+      "lineage": "喷气时代机票 / 碳复写票根",
+      "thesis": "把一周装进票夹：每天一张可撕票根，截止是盖章日期。",
+      "palette": ["#14294A", "#D64031", "#F4F1E8", "#5B3A8E"],
+      "materials": ["票根纸", "碳复写", "打孔与撕线"],
+      "viewport": "顶部是今天的票根，课程是航班行，截止是红色日期章；底部标准导航。",
+      "case": "行程感强，能同时承载一周课程和截止；但纸张拟物容易过密，牺牲扫读速度。",
+      "risk": "容易变成复古票夹，而不是每天打开的工具。",
+      "html": ".impeccable/mocks/decision/challenger-ticket-wallet.html",
+      "htmlFrame": "390x844"
+    },
+    {
+      "id": "challenger-acetate-manual",
+      "kind": "challenger",
+      "catalogId": "rw-manual-acetate-tab-board",
+      "label": "醋酸片手册",
+      "verdict": "competitive",
+      "lineage": "盒装软件参考手册 / 醋酸片分页",
+      "thesis": "把导航做成手册分页：每页一个任务区，醋酸片上的字浮在色板上。",
+      "palette": ["#F2F0E9", "#D95B2B", "#D6C63A", "#2E7D6E", "#3B4C9A"],
+      "materials": ["醋酸片", "分页标签", "打孔装订"],
+      "viewport": "左侧是阶梯分页标签，右侧是醋酸片上的课程与截止表格；底部标准导航。",
+      "case": "分页索引清晰，桌面宽屏很有秩序；手机上醋酸片与装订容易变成道具。",
+      "risk": "过度拟物时，扫读速度会输给普通列表。",
+      "html": ".impeccable/mocks/decision/challenger-acetate-manual.html",
+      "htmlFrame": "390x844"
+    },
+    {
+      "id": "challenger-emission-rail",
+      "kind": "challenger",
+      "catalogId": "operate-c-emission-line-rail",
+      "label": "光谱发射线",
+      "verdict": "declined",
+      "lineage": "光谱图 / 低温观察台",
+      "thesis": "所有内容挂在一条偏离中心的校准轨上，状态靠线高、虚线和双线表达。",
+      "palette": ["#2A2F33", "#C9C2B4", "#D8B24A", "#6FA8B8"],
+      "materials": ["炭灰连续谱", "骨白标注", "发光线"],
+      "viewport": "一条偏离中心的轨道贯穿屏幕，活动以发光线标记，状态靠线型变化。",
+      "case": "观众不会把自己认成光谱仪操作员；工具感太强。",
+      "kept": "状态用线型表达：实线进行中、虚线待办、半高已过期。",
+      "risk": "在校园助手里会读成仪器面板，而不是日常工具。"
+    },
+    {
+      "id": "challenger-character-catalog",
+      "kind": "challenger",
+      "catalogId": "pop-culture-shelf-character-goods-catalog",
+      "label": "角色商品目录",
+      "verdict": "declined",
+      "lineage": "角色周边目录 / 排行榜",
+      "thesis": "用圆角角色和名册网格组织内容，每个条目有名字、生日和一句性格。",
+      "palette": ["#F5D7E1", "#FFFDF7", "#8ED1C6", "#E6A15A"],
+      "materials": ["柔和底色", "白色描边", "缎带色"],
+      "viewport": "圆角角色按人气排成网格，每个角色下方是名字牌和一行说明。",
+      "case": "角色化不适合课程与截止信息，信息密度也低。",
+      "kept": "有限名册的顺序感：Deadline 始终按截止时间排序。",
+      "risk": "会变成周边目录，而不是校园助手。"
+    },
+    {
+      "id": "challenger-star-atlas",
+      "kind": "challenger",
+      "catalogId": "notation-diagram-systems-star-atlas",
+      "label": "星图",
+      "verdict": "declined",
+      "lineage": "天文学星图 / 星等标注",
+      "thesis": "用星等大小的点、星座连线和坐标网格组织信息。",
+      "palette": ["#0B1B33", "#E8EDF5", "#D98B4A", "#C4472D"],
+      "materials": ["深蓝星图", "粉白星点", "红光电筒琥珀色"],
+      "viewport": "深蓝星图上，课程是星点，截止是带环的变星，星座线只在需要时浮现。",
+      "case": "识别度低，学生不会把校园助手认成星图。",
+      "kept": "用字号与线宽表达紧急度，不只靠颜色。",
+      "risk": "信息层级会消失在装饰性的星点里。"
+    }
+  ],
+  "reroll": {
+    "registers": ["safer", "bolder"]
+  },
+  "buildPath": {
+    "value": "code"
+  },
+  "canon": true,
+  "canonCard": {
+    "kind": "canon",
+    "label": "温和卡片式应用",
+    "lineage": "当前品类的标准答案",
+    "thesis": "暖色底、白卡片、一个动作色，做到极致。",
+    "palette": ["#F6F4EF", "#FFFFFF", "#111827", "#2563EB"],
+    "materials": ["软圆角卡片", "充足留白", "单一动作色"],
+    "viewport": "今天课程卡片 + 截止卡片 + 底部导航。",
+    "risk": "与竞品几乎没有区别，但最稳。",
+    "html": ".impeccable/mocks/decision/canon-warm-app.html",
+    "htmlFrame": "390x844"
+  },
+  "steer": true
+}

@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import 'xuexitong_course_cache.dart';
 import 'xuexitong_due_time.dart';
+import 'xuexitong_practice_answer.dart';
 import 'xuexitong_session_store.dart';
 
 /// 学习通集成中面向上层的失败类型。
@@ -508,7 +509,11 @@ class XuexitongService {
     final detailTasks = pending.take(maxDetailFetches).toList();
     final dueByUrl = <String, DateTime?>{};
     final detailWatch = Stopwatch()..start();
-    for (var start = 0; start < detailTasks.length; start += detailConcurrency) {
+    for (
+      var start = 0;
+      start < detailTasks.length;
+      start += detailConcurrency
+    ) {
       final batch = detailTasks.skip(start).take(detailConcurrency).toList();
       final dues = await Future.wait(
         batch.map((item) => _fetchDetailDueTime(session, item.task.url)),
@@ -761,7 +766,12 @@ class XuexitongService {
     var courseRequests = 0;
     var courseNetMs = 0;
     var limitWarningAdded = false;
+    var answerChecks = 0;
+    var answerFailures = 0;
+    var answerNetMs = 0;
+    var answerLimitWarningAdded = false;
     const maxInfoRequests = 50;
+    const maxAnswerChecks = 20;
 
     final toCheck = <_FallbackCourse>[];
     for (final course in courses) {
@@ -950,13 +960,47 @@ class XuexitongService {
             );
           }
 
+          var completed = false;
+          if (running &&
+              mission.activeType == 42 &&
+              mission.url.trim().isNotEmpty) {
+            if (answerChecks >= maxAnswerChecks) {
+              if (!answerLimitWarningAdded) {
+                answerLimitWarningAdded = true;
+                warnings.add(
+                  '随堂练习提交状态检查已达上限（$maxAnswerChecks 次），'
+                  '其余按未完成导入。',
+                );
+              }
+            } else {
+              answerChecks++;
+              final answerWatch = Stopwatch()..start();
+              final answered = await _fetchPracticeAnswered(
+                session,
+                mission.url,
+              );
+              answerWatch.stop();
+              answerNetMs += answerWatch.elapsedMilliseconds;
+              if (answered == null) {
+                answerFailures++;
+                diagnostics.add('提交状态读取失败：${course.courseName} · $title');
+              } else {
+                completed = answered;
+                diagnostics.add(
+                  '提交状态：${course.courseName} · $title → '
+                  '${answered ? '已提交' : '未提交'}',
+                );
+              }
+            }
+          }
+
           tasks.add(
             ChaoxingTaskItem(
               id: 'activity:${mission.id}',
               title: title,
               courseName: course.courseName,
               type: 'activity',
-              status: 0,
+              status: completed ? 1 : 0,
               openTime: _fromEpoch(mission.startTime) ?? DateTime.now(),
               endTime: due,
               doTaskUrl: mission.url,
@@ -997,12 +1041,16 @@ class XuexitongService {
     diagnostics.add(
       '耗时：课程列表 ${coursesWatch.elapsedMilliseconds}ms，'
       '课堂活动 $courseRequests 次/${courseNetMs}ms，'
-      '活动详情 $infoRequests 次/${infoNetMs}ms',
+      '活动详情 $infoRequests 次/${infoNetMs}ms，'
+      '提交状态 $answerChecks 次/${answerNetMs}ms'
+      '${answerFailures == 0 ? '' : '（失败 $answerFailures 次）'}',
     );
     debugPrint(
       '[XXT] courses=${coursesWatch.elapsedMilliseconds}ms '
       'courseReqs=$courseRequests courseNet=${courseNetMs}ms '
-      'infoReqs=$infoRequests infoNet=${infoNetMs}ms',
+      'infoReqs=$infoRequests infoNet=${infoNetMs}ms '
+      'answerReqs=$answerChecks answerNet=${answerNetMs}ms '
+      'answerFail=$answerFailures',
     );
     diagnostics.add('随堂练习入库：${tasks.length} 条');
     return _PracticeActivitiesResult(
@@ -1042,6 +1090,39 @@ class XuexitongService {
     if (left == null) return right;
     if (right == null) return left;
     return left.isAfter(right) ? left : right;
+  }
+
+  /// 随堂练习页面会按学生渲染提交状态；只读取页面里的“已提交”标记，
+  /// 读取失败时返回 null，不把失败当成未提交。
+  Future<bool?> _fetchPracticeAnswered(
+    ChaoxingSession session,
+    String rawUrl,
+  ) async {
+    final uri = _resolveTaskUrl(rawUrl);
+    if (uri == null) return null;
+
+    try {
+      final response = await _dio.get<String>(
+        uri.toString(),
+        options: Options(
+          headers: _headers(session),
+          responseType: ResponseType.plain,
+          followRedirects: true,
+          receiveTimeout: const Duration(seconds: 15),
+          validateStatus: (status) => status != null && status < 500,
+        ),
+      );
+      final code = response.statusCode ?? 0;
+      if (code < 200 || code >= 400) return null;
+      final html = response.data ?? '';
+      if (html.contains('passport2.chaoxing.com/login') ||
+          html.contains('<title>登录')) {
+        return null;
+      }
+      return parseXuexitongPracticeAnswered(html);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<DateTime?> _fetchActivityEndTime(

@@ -4,15 +4,24 @@ import 'package:uuid/uuid.dart';
 
 import '../models/deadline.dart';
 import '../models/timetable.dart';
+import 'deadline_tag.dart';
 import 'timetable_format.dart';
 
-enum _DueMode { dateTime, remaining }
+enum _DueMode { dateTime, remaining, none }
 
 class DeadlineEditPage extends StatefulWidget {
-  const DeadlineEditPage({super.key, required this.courses, this.initial});
+  const DeadlineEditPage({
+    super.key,
+    required this.courses,
+    this.initial,
+    this.tagOptions = const [],
+  });
 
   final List<Course> courses;
   final Deadline? initial;
+
+  /// 已有标签，用于快速填入。
+  final List<String> tagOptions;
 
   @override
   State<DeadlineEditPage> createState() => _DeadlineEditPageState();
@@ -21,14 +30,20 @@ class DeadlineEditPage extends StatefulWidget {
 class _DeadlineEditPageState extends State<DeadlineEditPage> {
   late final TextEditingController _titleController;
   late final TextEditingController _noteController;
+  late final TextEditingController _tagController;
   late final TextEditingController _daysController;
   late final TextEditingController _hoursController;
   late final TextEditingController _minutesController;
   late DateTime _dueAt;
   String? _courseName;
   late final List<String> _courseOptions;
+  late final List<String> _tagOptions;
+  final Set<String> _selectedTags = {};
   _DueMode _mode = _DueMode.dateTime;
   Duration _remaining = Duration.zero;
+
+  /// -1 = 不提醒，0 = 准时，正数 = 提前分钟数。
+  int _reminderChoice = 0;
 
   static const List<(String, Duration)> _presets = [
     ('30 分钟', Duration(minutes: 30)),
@@ -48,12 +63,23 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
     final now = DateTime.now();
     _titleController = TextEditingController(text: widget.initial?.title ?? '');
     _noteController = TextEditingController(text: widget.initial?.note ?? '');
+    _tagController = TextEditingController();
     _daysController = TextEditingController(text: '0');
     _hoursController = TextEditingController(text: '0');
     _minutesController = TextEditingController(text: '0');
-    _dueAt =
-        widget.initial?.dueAt ?? DateTime(now.year, now.month, now.day, 23, 59);
+    final initialDue = widget.initial?.dueAt;
+    _dueAt = initialDue ?? DateTime(now.year, now.month, now.day, 23, 59);
+    _mode = widget.initial != null && initialDue == null
+        ? _DueMode.none
+        : _DueMode.dateTime;
+    _reminderChoice = widget.initial == null
+        ? 0
+        : (widget.initial?.reminderOffsetMinutes ?? -1);
     _courseName = widget.initial?.courseName;
+    _selectedTags.addAll(widget.initial?.tags ?? const []);
+    final extraTags = <String>{...widget.tagOptions, ..._selectedTags}
+      ..removeAll(defaultDeadlineTags);
+    _tagOptions = [...defaultDeadlineTags, ...(extraTags.toList()..sort())];
 
     final names = <String>{for (final course in widget.courses) course.name};
     if (_courseName != null) names.add(_courseName!);
@@ -64,6 +90,7 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
   void dispose() {
     _titleController.dispose();
     _noteController.dispose();
+    _tagController.dispose();
     _daysController.dispose();
     _hoursController.dispose();
     _minutesController.dispose();
@@ -78,6 +105,10 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
   void _setMode(_DueMode mode) {
     if (mode == _mode) return;
     setState(() {
+      if (mode == _DueMode.none) {
+        _mode = mode;
+        return;
+      }
       if (mode == _DueMode.remaining) {
         final difference = _dueAt.difference(_nowToMinute());
         _remaining = difference > Duration.zero
@@ -164,6 +195,16 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
     });
   }
 
+  void _addCustomTag() {
+    final tag = _tagController.text.trim();
+    if (tag.isEmpty) return;
+    setState(() {
+      if (!_tagOptions.contains(tag)) _tagOptions.add(tag);
+      _selectedTags.add(tag);
+      _tagController.clear();
+    });
+  }
+
   void _save() {
     final title = _titleController.text.trim();
     if (title.isEmpty) {
@@ -181,12 +222,21 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
 
     final now = DateTime.now();
     final note = _noteController.text.trim();
+    final tags = [
+      for (final tag in _tagOptions)
+        if (_selectedTags.contains(tag)) tag,
+    ];
+    final hasDue = _mode != _DueMode.none;
     final deadline = Deadline(
       id: widget.initial?.id ?? const Uuid().v4(),
       title: title,
-      dueAt: _dueAt,
+      dueAt: hasDue ? _dueAt : null,
       courseName: _courseName,
       note: note.isEmpty ? null : note,
+      tags: tags,
+      reminderOffsetMinutes: !hasDue || _reminderChoice < 0
+          ? null
+          : _reminderChoice,
       completed: widget.initial?.completed ?? false,
       createdAt: widget.initial?.createdAt ?? now,
       updatedAt: now,
@@ -234,6 +284,7 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
                       value: _DueMode.remaining,
                       label: Text('按剩余时长'),
                     ),
+                    ButtonSegment(value: _DueMode.none, label: Text('无截止')),
                   ],
                   selected: {_mode},
                   showSelectedIcon: false,
@@ -249,9 +300,85 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
-                ] else
-                  _buildRemainingCard(theme),
+                ] else if (_mode == _DueMode.remaining)
+                  _buildRemainingCard(theme)
+                else
+                  Text(
+                    '这类日程不会过期，也不会发送提醒。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                if (_mode != _DueMode.none) ...[
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<int>(
+                    key: ValueKey('reminder-$_reminderChoice'),
+                    initialValue: _reminderChoice,
+                    decoration: const InputDecoration(
+                      labelText: '提醒',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: -1, child: Text('不提醒')),
+                      DropdownMenuItem(value: 0, child: Text('截止时提醒')),
+                      DropdownMenuItem(value: 10, child: Text('提前 10 分钟')),
+                      DropdownMenuItem(value: 60, child: Text('提前 1 小时')),
+                      DropdownMenuItem(value: 1440, child: Text('提前 1 天')),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _reminderChoice = value);
+                    },
+                  ),
+                ],
                 const SizedBox(height: 16),
+                Text('标签（可多选）', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    for (final tag in _tagOptions)
+                      FilterChip(
+                        label: Text(tag),
+                        selected: _selectedTags.contains(tag),
+                        onSelected: (selected) {
+                          setState(() {
+                            if (selected) {
+                              _selectedTags.add(tag);
+                            } else {
+                              _selectedTags.remove(tag);
+                            }
+                          });
+                        },
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _tagController,
+                        inputFormatters: [LengthLimitingTextInputFormatter(20)],
+                        textInputAction: TextInputAction.done,
+                        onSubmitted: (_) => _addCustomTag(),
+                        decoration: const InputDecoration(
+                          labelText: '自定义标签',
+                          hintText: '输入后点添加',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton(
+                      onPressed: _addCustomTag,
+                      child: const Text('添加'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   initialValue: _courseName ?? '',
                   decoration: const InputDecoration(

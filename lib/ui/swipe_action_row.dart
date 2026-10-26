@@ -28,6 +28,8 @@ class SwipeActionRow extends StatefulWidget {
     this.backgroundColor,
     this.borderRadius = BorderRadius.zero,
     this.actionWidth = 72,
+    this.onFullSwipe,
+    this.fullSwipeExtraWidth = 72,
   }) : assert(actions.length > 0);
 
   final Widget child;
@@ -38,6 +40,12 @@ class SwipeActionRow extends StatefulWidget {
   final BorderRadius borderRadius;
   final double actionWidth;
 
+  /// 继续向左拖动超过操作区后触发；null 时不启用完整左滑。
+  final VoidCallback? onFullSwipe;
+
+  /// 完整左滑需要超出操作区的最小距离。
+  final double fullSwipeExtraWidth;
+
   @override
   State<SwipeActionRow> createState() => _SwipeActionRowState();
 }
@@ -46,26 +54,38 @@ class _SwipeActionRowState extends State<SwipeActionRow> {
   static const Duration _snapDuration = Duration(milliseconds: 160);
 
   double _offset = 0;
+  double _dragOverflow = 0;
   bool _dragging = false;
 
   double get _maxOffset => -widget.actions.length * widget.actionWidth;
 
   void _onDragStart(DragStartDetails details) {
-    setState(() => _dragging = true);
+    setState(() {
+      _dragging = true;
+      _dragOverflow = 0;
+    });
   }
 
   void _onDragUpdate(DragUpdateDetails details) {
     if (_maxOffset == 0) return;
+    final next = _offset + details.delta.dx;
     setState(() {
-      _offset = (_offset + details.delta.dx).clamp(_maxOffset, 0.0);
+      _offset = next.clamp(_maxOffset, 0.0);
+      _dragOverflow = next < _maxOffset ? _maxOffset - next : 0;
     });
   }
 
   void _onDragEnd(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
+    final fullSwipe =
+        widget.onFullSwipe != null &&
+        _dragOverflow >= widget.fullSwipeExtraWidth;
     setState(() {
       _dragging = false;
-      if (velocity < -300) {
+      _dragOverflow = 0;
+      if (fullSwipe) {
+        _offset = 0;
+      } else if (velocity < -300) {
         _offset = _maxOffset;
       } else if (velocity > 300) {
         _offset = 0;
@@ -73,11 +93,13 @@ class _SwipeActionRowState extends State<SwipeActionRow> {
         _offset = _offset < _maxOffset * 0.35 ? _maxOffset : 0;
       }
     });
+    if (fullSwipe) widget.onFullSwipe!();
   }
 
   void _onDragCancel() {
     setState(() {
       _dragging = false;
+      _dragOverflow = 0;
       _offset = 0;
     });
   }

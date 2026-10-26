@@ -140,6 +140,23 @@ PeriodSpan? spanForPeriods(int startPeriod, int endPeriod) {
   return PeriodSchedule.standard.spanFor(startPeriod, endPeriod);
 }
 
+/// 课程块显示用的起止时间：优先按节次标签套用当前作息，
+/// 没有节次或作息缺项时回退到导入时的时间。
+/// 首页与课表页共用，避免调整作息后两处时间不一致。
+PeriodSpan resolveMeetingSpan({
+  required PeriodSchedule schedule,
+  required int startMinute,
+  required int endMinute,
+  String? periodLabel,
+}) {
+  final range = periodRangeFromLabel(periodLabel);
+  if (range != null) {
+    final span = schedule.spanFor(range.start, range.end);
+    if (span != null) return span;
+  }
+  return PeriodSpan(startMinute: startMinute, endMinute: endMinute);
+}
+
 /// 从「1-2节」「11节」这类描述中解析节次区间。
 PeriodRange? periodRangeFromLabel(String? label) {
   if (label == null) return null;

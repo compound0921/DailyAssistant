@@ -142,7 +142,8 @@ XuexitongMergeResult mergeXuexitongDeadlines({
     final reconciled =
         courseName != null && reconciledCourseNames.contains(courseName);
     if (reconciled) return true;
-    return !item.dueAt.isAfter(current);
+    final due = item.dueAt;
+    return due == null || !due.isAfter(current);
   });
   final removed = beforePrune - result.length;
 

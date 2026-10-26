@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/deadline_repository.dart';
+import '../data/settings_repository.dart';
 import '../data/timetable_repository.dart';
 import '../import/period_times.dart';
 import '../jiaowu/jiaowu_exam_merge.dart';
@@ -15,13 +16,16 @@ import '../models/deadline.dart';
 import '../models/timetable.dart';
 import '../models/timetable_appearance.dart';
 import '../models/timetable_store.dart';
+import '../notifications/deadline_notifications.dart';
 import '../xuexitong/xuexitong_deadline_mapper.dart';
 import '../xuexitong/xuexitong_service.dart';
+import '../yuketang/yuketang_service.dart';
 import 'app_theme.dart';
 import 'course_edit_page.dart';
 import 'deadline_colors.dart';
 import 'deadline_edit_page.dart';
 import 'deadline_section.dart';
+import 'deadline_tag.dart';
 import 'exam_edit_page.dart';
 import 'import_page.dart';
 import 'settings_page.dart';
@@ -42,12 +46,18 @@ class HomePage extends StatefulWidget {
     required this.onThemeModeChanged,
     required this.appearance,
     required this.onAppearanceChanged,
+    this.settingsRepository,
     this.initialStore = TimetableStore.empty,
     this.initialDeadlines = const [],
+    this.initialDeadlineCollapsed = false,
+    this.initialExamCollapsed = false,
   });
 
   final TimetableRepository repository;
   final DeadlineRepository deadlineRepository;
+  final SettingsRepository? settingsRepository;
+  final bool initialDeadlineCollapsed;
+  final bool initialExamCollapsed;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final TimetableAppearance appearance;
@@ -65,11 +75,19 @@ class _HomePageState extends State<HomePage> {
   _HomeSection _section = _HomeSection.home;
   final XuexitongService _xuexitongService = XuexitongService();
   final JiaowuService _jiaowuService = JiaowuService();
+  final YuketangService _yuketangService = YuketangService();
+  late final SettingsRepository _settingsRepository =
+      widget.settingsRepository ?? SettingsRepository();
+  final DeadlineNotificationService _notifications =
+      DeadlineNotificationService.instance;
   bool _autoSyncRunning = false;
   bool _autoSyncJiaowuRunning = false;
   SyncTarget _syncTarget = SyncTarget.xuexitong;
   List<JiaowuMessage> _jiaowuMessages = const [];
   List<JiaowuExam> _jiaowuExams = const [];
+  bool _deadlineCollapsed = false;
+  bool _examCollapsed = false;
+  Set<String> _deadlineTagFilters = {};
   Timer? _clockTimer;
 
   static const Duration _autoSyncInterval = Duration(minutes: 5);
@@ -79,7 +97,10 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _store = widget.initialStore;
     _deadlines = widget.initialDeadlines;
+    _deadlineCollapsed = widget.initialDeadlineCollapsed;
+    _examCollapsed = widget.initialExamCollapsed;
     _loadJiaowuSnapshot();
+    unawaited(_notifications.syncAll(_deadlines));
     unawaited(_cleanupJiaowuDeadlines());
     _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
@@ -89,6 +110,8 @@ class _HomePageState extends State<HomePage> {
       await _autoSyncXuexitong();
       // 调试版忽略 5 分钟冷却，便于反复验证教务页面。
       await _autoSyncJiaowu(force: kDebugMode);
+      // 第一阶段只验证登录与课程列表：失效或断网都不打扰。
+      await _autoCheckYuketang();
     });
   }
 
@@ -96,6 +119,24 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _clockTimer?.cancel();
     super.dispose();
+  }
+
+  void _toggleDeadlineCollapsed() {
+    setState(() => _deadlineCollapsed = !_deadlineCollapsed);
+    unawaited(
+      _settingsRepository.saveHomeDeadlineCollapsed(_deadlineCollapsed),
+    );
+  }
+
+  void _toggleExamCollapsed() {
+    setState(() => _examCollapsed = !_examCollapsed);
+    unawaited(_settingsRepository.saveHomeExamCollapsed(_examCollapsed));
+  }
+
+  List<String> get _deadlineTags {
+    final extra = <String>{for (final deadline in _deadlines) ...deadline.tags}
+      ..removeAll(defaultDeadlineTags);
+    return [...defaultDeadlineTags, ...(extra.toList()..sort())];
   }
 
   TimetableEntry? get _active => _store.active;
@@ -294,6 +335,21 @@ class _HomePageState extends State<HomePage> {
       if (report) _showMessage('学习通同步失败：$error');
     } finally {
       _autoSyncRunning = false;
+    }
+  }
+
+  Future<void> _autoCheckYuketang() async {
+    try {
+      final state = await _yuketangService.loadStoredState();
+      if (!state.hasSession) return;
+      final checkedAt = state.lastCheckedAt;
+      if (checkedAt != null &&
+          DateTime.now().difference(checkedAt) < _autoSyncInterval) {
+        return;
+      }
+      await _yuketangService.refresh();
+    } catch (_) {
+      // 静默：会话失效或网络异常都不在启动时打扰用户。
     }
   }
 
@@ -501,13 +557,18 @@ class _HomePageState extends State<HomePage> {
   Future<void> _createDeadline() async {
     final created = await Navigator.of(context).push<Deadline>(
       MaterialPageRoute(
-        builder: (_) =>
-            DeadlineEditPage(courses: _active?.timetable.courses ?? const []),
+        builder: (_) => DeadlineEditPage(
+          courses: _active?.timetable.courses ?? const [],
+          tagOptions: _deadlineTags,
+        ),
       ),
     );
     if (created == null || !mounted) return;
 
     if (await _persistDeadlines([..._deadlines, created])) {
+      if (created.reminderOffsetMinutes != null) {
+        unawaited(_notifications.requestPermission());
+      }
       _showMessage('日程已添加');
     }
   }
@@ -518,6 +579,7 @@ class _HomePageState extends State<HomePage> {
         builder: (_) => DeadlineEditPage(
           courses: _active?.timetable.courses ?? const [],
           initial: deadline,
+          tagOptions: _deadlineTags,
         ),
       ),
     );
@@ -527,6 +589,9 @@ class _HomePageState extends State<HomePage> {
       for (final item in _deadlines) item.id == updated.id ? updated : item,
     ];
     if (await _persistDeadlines(next)) {
+      if (updated.reminderOffsetMinutes != null) {
+        unawaited(_notifications.requestPermission());
+      }
       _showMessage('日程已更新');
     }
   }
@@ -620,10 +685,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<bool> _persistDeadlines(List<Deadline> deadlines) async {
+    final previous = _deadlines;
     try {
       await widget.deadlineRepository.save(deadlines);
       if (!mounted) return false;
       setState(() => _deadlines = deadlines);
+      unawaited(_notifications.syncAll(deadlines, previous: previous));
       return true;
     } catch (error) {
       if (!mounted) return false;
@@ -826,6 +893,14 @@ class _HomePageState extends State<HomePage> {
         return _HomeOverview(
           store: _store,
           deadlines: _deadlines,
+          deadlineCollapsed: _deadlineCollapsed,
+          examCollapsed: _examCollapsed,
+          deadlineTagFilters: _deadlineTagFilters,
+          onToggleDeadlineCollapsed: _toggleDeadlineCollapsed,
+          onToggleExamCollapsed: _toggleExamCollapsed,
+          onDeadlineTagFiltersChanged: (tags) {
+            setState(() => _deadlineTagFilters = tags);
+          },
           onOpenTimetable: _openTimetable,
           onOpenDeadlines: _openDeadlines,
           onOpenSync: _openSync,
@@ -838,6 +913,7 @@ class _HomePageState extends State<HomePage> {
           onDeleteExam: _deleteJiaowuExam,
           onEditDeadline: _editDeadline,
           onDeleteDeadline: _deleteDeadline,
+          onToggleDeadline: _toggleDeadline,
         );
       case _HomeSection.timetable:
         if (active == null || active.timetable.isEmpty) {
@@ -867,6 +943,7 @@ class _HomePageState extends State<HomePage> {
         return SyncPage(
           xuexitongService: _xuexitongService,
           jiaowuService: _jiaowuService,
+          yuketangService: _yuketangService,
           existingDeadlines: _deadlines,
           onCommitXuexitong: _commitXuexitong,
           initialTarget: _syncTarget,
@@ -892,6 +969,12 @@ class _HomeOverview extends StatelessWidget {
   const _HomeOverview({
     required this.store,
     required this.deadlines,
+    required this.deadlineCollapsed,
+    required this.examCollapsed,
+    required this.deadlineTagFilters,
+    required this.onToggleDeadlineCollapsed,
+    required this.onToggleExamCollapsed,
+    required this.onDeadlineTagFiltersChanged,
     required this.onOpenTimetable,
     required this.onOpenDeadlines,
     required this.onOpenSync,
@@ -904,10 +987,17 @@ class _HomeOverview extends StatelessWidget {
     required this.onDeleteExam,
     required this.onEditDeadline,
     required this.onDeleteDeadline,
+    required this.onToggleDeadline,
   });
 
   final TimetableStore store;
   final List<Deadline> deadlines;
+  final bool deadlineCollapsed;
+  final bool examCollapsed;
+  final Set<String> deadlineTagFilters;
+  final VoidCallback onToggleDeadlineCollapsed;
+  final VoidCallback onToggleExamCollapsed;
+  final ValueChanged<Set<String>> onDeadlineTagFiltersChanged;
   final VoidCallback onOpenTimetable;
   final VoidCallback onOpenDeadlines;
   final ValueChanged<SyncTarget> onOpenSync;
@@ -920,6 +1010,7 @@ class _HomeOverview extends StatelessWidget {
   final ValueChanged<JiaowuExam> onDeleteExam;
   final ValueChanged<Deadline> onEditDeadline;
   final ValueChanged<Deadline> onDeleteDeadline;
+  final ValueChanged<Deadline> onToggleDeadline;
 
   @override
   Widget build(BuildContext context) {
@@ -945,9 +1036,27 @@ class _HomeOverview extends StatelessWidget {
           ).where((item) => item.meeting.weekday == now.weekday).toList()
         : <EffectiveMeeting>[];
     final nowMinutes = now.hour * 60 + now.minute;
+    if (inTerm) {
+      final schedule = active!.periodSchedule;
+      int startOf(EffectiveMeeting item) => resolveMeetingSpan(
+        schedule: schedule,
+        startMinute: item.meeting.startMinute,
+        endMinute: item.meeting.endMinute,
+        periodLabel: item.meeting.periodLabel,
+      ).startMinute;
+      todayMeetings.sort(
+        (left, right) => startOf(left).compareTo(startOf(right)),
+      );
+    }
     EffectiveMeeting? nextMeeting;
     for (final item in todayMeetings) {
-      if (!item.cancelled && item.meeting.endMinute > nowMinutes) {
+      final span = resolveMeetingSpan(
+        schedule: active!.periodSchedule,
+        startMinute: item.meeting.startMinute,
+        endMinute: item.meeting.endMinute,
+        periodLabel: item.meeting.periodLabel,
+      );
+      if (!item.cancelled && span.endMinute > nowMinutes) {
         nextMeeting = item;
         break;
       }
@@ -955,7 +1064,16 @@ class _HomeOverview extends StatelessWidget {
     final hasAnyToday = todayMeetings.isNotEmpty;
     final hasActiveToday = todayMeetings.any((item) => !item.cancelled);
     final groups = groupDeadlines(deadlines, now: now);
-    final nearest = groups.incomplete.take(3).toList();
+    final usedTags = <String>{
+      for (final deadline in deadlines) ...deadline.tags,
+    }.toList()..sort();
+    final filtered = deadlineTagFilters.isEmpty
+        ? groups.incomplete
+        : [
+            for (final item in groups.incomplete)
+              if (item.tags.any(deadlineTagFilters.contains)) item,
+          ];
+    final nearest = filtered.take(3).toList();
     final homeExams = homeVisibleExams(exams: jiaowuExams, now: now);
 
     final left = <Widget>[
@@ -976,6 +1094,7 @@ class _HomeOverview extends StatelessWidget {
         const SizedBox(height: AppSpacing.md),
         _TodayTimeline(
           meetings: todayMeetings,
+          periodSchedule: active!.periodSchedule,
           nowMinutes: nowMinutes,
           onTap: onOpenTimetable,
         ),
@@ -984,15 +1103,25 @@ class _HomeOverview extends StatelessWidget {
     final right = <Widget>[
       _HomeDeadlinePreview(
         items: nearest,
+        totalCount: filtered.length,
         now: now,
+        collapsed: deadlineCollapsed,
+        onToggleCollapsed: onToggleDeadlineCollapsed,
+        tags: usedTags,
+        selectedTags: deadlineTagFilters,
+        onTagFiltersChanged: onDeadlineTagFiltersChanged,
         onOpenAll: onOpenDeadlines,
         onEdit: onEditDeadline,
         onDelete: onDeleteDeadline,
+        onToggle: onToggleDeadline,
       ),
       const SizedBox(height: AppSpacing.md),
       _HomeExamPreview(
         exams: homeExams,
+        totalCount: homeExams.length,
         now: now,
+        collapsed: examCollapsed,
+        onToggleCollapsed: onToggleExamCollapsed,
         onOpenAll: () => onOpenSync(SyncTarget.jiaowu),
         onAddExam: onAddExam,
         onEditExam: onEditExam,
@@ -1241,7 +1370,13 @@ class _TodayHero extends StatelessWidget {
 
     final meeting = next.meeting;
     final course = next.course;
-    final ongoing = meeting.startMinute <= nowMinutes;
+    final span = resolveMeetingSpan(
+      schedule: active!.periodSchedule,
+      startMinute: meeting.startMinute,
+      endMinute: meeting.endMinute,
+      periodLabel: meeting.periodLabel,
+    );
+    final ongoing = span.startMinute <= nowMinutes;
     final details = [
       next.location,
       next.teacher,
@@ -1295,13 +1430,13 @@ class _TodayHero extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    formatMinutes(meeting.startMinute),
+                    formatMinutes(span.startMinute),
                     style: tabularFigures(
                       theme.textTheme.headlineMedium,
                     ).copyWith(color: theme.colorScheme.primary),
                   ),
                   Text(
-                    '至 ${formatMinutes(meeting.endMinute)}',
+                    '至 ${formatMinutes(span.endMinute)}',
                     style: tabularFigures(
                       theme.textTheme.bodySmall,
                     ).copyWith(color: theme.colorScheme.onSurfaceVariant),
@@ -1374,11 +1509,13 @@ class _HeroIcon extends StatelessWidget {
 class _TodayTimeline extends StatelessWidget {
   const _TodayTimeline({
     required this.meetings,
+    required this.periodSchedule,
     required this.nowMinutes,
     required this.onTap,
   });
 
   final List<EffectiveMeeting> meetings;
+  final PeriodSchedule periodSchedule;
   final int nowMinutes;
   final VoidCallback onTap;
 
@@ -1412,6 +1549,7 @@ class _TodayTimeline extends StatelessWidget {
             for (var index = 0; index < meetings.length; index++) ...[
               _TodayTimelineRow(
                 effective: meetings[index],
+                periodSchedule: periodSchedule,
                 nowMinutes: nowMinutes,
                 onTap: onTap,
               ),
@@ -1432,11 +1570,13 @@ class _TodayTimeline extends StatelessWidget {
 class _TodayTimelineRow extends StatelessWidget {
   const _TodayTimelineRow({
     required this.effective,
+    required this.periodSchedule,
     required this.nowMinutes,
     required this.onTap,
   });
 
   final EffectiveMeeting effective;
+  final PeriodSchedule periodSchedule;
   final int nowMinutes;
   final VoidCallback onTap;
 
@@ -1445,11 +1585,17 @@ class _TodayTimelineRow extends StatelessWidget {
     final theme = Theme.of(context);
     final meeting = effective.meeting;
     final course = effective.course;
+    final span = resolveMeetingSpan(
+      schedule: periodSchedule,
+      startMinute: meeting.startMinute,
+      endMinute: meeting.endMinute,
+      periodLabel: meeting.periodLabel,
+    );
     final ongoing =
         !effective.cancelled &&
-        meeting.startMinute <= nowMinutes &&
-        meeting.endMinute > nowMinutes;
-    final past = meeting.endMinute <= nowMinutes;
+        span.startMinute <= nowMinutes &&
+        span.endMinute > nowMinutes;
+    final past = span.endMinute <= nowMinutes;
     final details = [
       effective.location,
       effective.teacher,
@@ -1475,7 +1621,7 @@ class _TodayTimelineRow extends StatelessWidget {
             SizedBox(
               width: 48,
               child: Text(
-                formatMinutes(meeting.startMinute),
+                formatMinutes(span.startMinute),
                 style: tabularFigures(theme.textTheme.bodySmall).copyWith(
                   color: ongoing && !effective.cancelled
                       ? primaryColor
@@ -1564,17 +1710,31 @@ class _TodayTimelineRow extends StatelessWidget {
 class _HomeDeadlinePreview extends StatelessWidget {
   const _HomeDeadlinePreview({
     required this.items,
+    required this.totalCount,
     required this.now,
+    required this.collapsed,
+    required this.onToggleCollapsed,
+    required this.tags,
+    required this.selectedTags,
+    required this.onTagFiltersChanged,
     required this.onOpenAll,
     required this.onEdit,
     required this.onDelete,
+    required this.onToggle,
   });
 
   final List<Deadline> items;
+  final int totalCount;
   final DateTime now;
+  final bool collapsed;
+  final VoidCallback onToggleCollapsed;
+  final List<String> tags;
+  final Set<String> selectedTags;
+  final ValueChanged<Set<String>> onTagFiltersChanged;
   final VoidCallback onOpenAll;
   final ValueChanged<Deadline> onEdit;
   final ValueChanged<Deadline> onDelete;
+  final ValueChanged<Deadline> onToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -1586,81 +1746,152 @@ class _HomeDeadlinePreview extends StatelessWidget {
         Row(
           children: [
             Text('日程', style: theme.textTheme.titleMedium),
+            if (collapsed) ...[
+              const SizedBox(width: 6),
+              Text(
+                '$totalCount',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
             const Spacer(),
-            TextButton(onPressed: onOpenAll, child: const Text('查看全部')),
-          ],
-        ),
-        const SizedBox(height: AppSpacing.xs),
-        Card(
-          child: items.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.check_circle_outline,
-                        color: theme.colorScheme.onSurfaceVariant,
+            if ((tags.isNotEmpty || selectedTags.isNotEmpty) && !collapsed)
+              MenuAnchor(
+                alignmentOffset: const Offset(-24, 8),
+                menuChildren: [
+                  for (final tag in tags)
+                    MenuItemButton(
+                      closeOnActivate: false,
+                      onPressed: () {
+                        final next = {...selectedTags};
+                        if (!next.remove(tag)) next.add(tag);
+                        onTagFiltersChanged(next);
+                      },
+                      leadingIcon: Icon(
+                        selectedTags.contains(tag)
+                            ? Icons.check_box
+                            : Icons.check_box_outline_blank,
                         size: 20,
                       ),
-                      const SizedBox(width: AppSpacing.sm),
-                      Expanded(
-                        child: Text(
-                          '没有待办，先享受一下。',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
+                      child: Text(tag),
+                    ),
+                  if (selectedTags.isNotEmpty) ...[
+                    const Divider(height: 1),
+                    MenuItemButton(
+                      onPressed: () => onTagFiltersChanged({}),
+                      leadingIcon: const Icon(Icons.clear_all, size: 20),
+                      child: const Text('清除筛选'),
+                    ),
+                  ],
+                ],
+                builder: (context, controller, child) {
+                  return IconButton(
+                    tooltip: '按标签筛选',
+                    onPressed: () => controller.isOpen
+                        ? controller.close()
+                        : controller.open(),
+                    icon: Badge.count(
+                      count: selectedTags.length,
+                      isLabelVisible: selectedTags.isNotEmpty,
+                      child: Icon(
+                        Icons.filter_list,
+                        size: 20,
+                        color: selectedTags.isEmpty
+                            ? theme.colorScheme.onSurfaceVariant
+                            : theme.colorScheme.primary,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            TextButton(onPressed: onOpenAll, child: const Text('查看全部')),
+            IconButton(
+              tooltip: collapsed ? '展开日程' : '收起日程',
+              onPressed: onToggleCollapsed,
+              icon: RotatedBox(
+                quarterTurns: collapsed ? 3 : 0,
+                child: const Icon(Icons.expand_more, size: 20),
+              ),
+            ),
+          ],
+        ),
+        if (!collapsed) ...[
+          const SizedBox(height: AppSpacing.xs),
+          Card(
+            child: items.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.lg,
+                      AppSpacing.md,
+                      AppSpacing.lg,
+                      AppSpacing.md,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.check_circle_outline,
+                          color: theme.colorScheme.onSurfaceVariant,
+                          size: 20,
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Expanded(
+                          child: Text(
+                            selectedTags.isEmpty ? '没有待办，先享受一下。' : '没有匹配的待办。',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
                           ),
                         ),
-                      ),
-                      TextButton(
-                        onPressed: onOpenAll,
-                        child: const Text('去添加'),
-                      ),
+                        TextButton(
+                          onPressed: onOpenAll,
+                          child: const Text('去添加'),
+                        ),
+                      ],
+                    ),
+                  )
+                : Column(
+                    children: [
+                      for (var index = 0; index < items.length; index++) ...[
+                        SwipeActionRow(
+                          backgroundColor: cardColor,
+                          onFullSwipe: () => onToggle(items[index]),
+                          actions: [
+                            SwipeAction(
+                              label: '编辑',
+                              icon: Icons.edit_outlined,
+                              backgroundColor:
+                                  theme.colorScheme.primaryContainer,
+                              foregroundColor:
+                                  theme.colorScheme.onPrimaryContainer,
+                              onPressed: () => onEdit(items[index]),
+                            ),
+                            SwipeAction(
+                              label: '删除',
+                              icon: Icons.delete_outline,
+                              backgroundColor: theme.colorScheme.errorContainer,
+                              foregroundColor:
+                                  theme.colorScheme.onErrorContainer,
+                              onPressed: () => onDelete(items[index]),
+                            ),
+                          ],
+                          child: _HomeDeadlineRow(
+                            deadline: items[index],
+                            now: now,
+                            onTap: onOpenAll,
+                          ),
+                        ),
+                        if (index < items.length - 1)
+                          Divider(
+                            height: 1,
+                            indent: 16,
+                            color: theme.colorScheme.outlineVariant,
+                          ),
+                      ],
                     ],
                   ),
-                )
-              : Column(
-                  children: [
-                    for (var index = 0; index < items.length; index++) ...[
-                      SwipeActionRow(
-                        backgroundColor: cardColor,
-                        actions: [
-                          SwipeAction(
-                            label: '编辑',
-                            icon: Icons.edit_outlined,
-                            backgroundColor: theme.colorScheme.primaryContainer,
-                            foregroundColor:
-                                theme.colorScheme.onPrimaryContainer,
-                            onPressed: () => onEdit(items[index]),
-                          ),
-                          SwipeAction(
-                            label: '删除',
-                            icon: Icons.delete_outline,
-                            backgroundColor: theme.colorScheme.errorContainer,
-                            foregroundColor: theme.colorScheme.onErrorContainer,
-                            onPressed: () => onDelete(items[index]),
-                          ),
-                        ],
-                        child: _HomeDeadlineRow(
-                          deadline: items[index],
-                          now: now,
-                          onTap: onOpenAll,
-                        ),
-                      ),
-                      if (index < items.length - 1)
-                        Divider(
-                          height: 1,
-                          indent: 16,
-                          color: theme.colorScheme.outlineVariant,
-                        ),
-                    ],
-                  ],
-                ),
-        ),
+          ),
+        ],
       ],
     );
   }
@@ -1715,36 +1946,38 @@ class _HomeDeadlineRow extends StatelessWidget {
                     style: theme.textTheme.titleSmall,
                   ),
                   const SizedBox(height: 3),
-                  Text(
-                    [?course, remaining].join(' · '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: urgencyTextColor,
-                    ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          [?course, remaining].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: urgencyTextColor,
+                          ),
+                        ),
+                      ),
+                      if (deadline.tags.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 180),
+                          child: Wrap(
+                            alignment: WrapAlignment.end,
+                            spacing: 4,
+                            runSpacing: 2,
+                            children: [
+                              for (final tag in deadline.tags)
+                                DeadlineTagChip(tag: tag),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
-            ),
-            const SizedBox(width: AppSpacing.sm),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  formatMonthDay(deadline.dueAt),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                Text(
-                  formatMinutes(
-                    deadline.dueAt.hour * 60 + deadline.dueAt.minute,
-                  ),
-                  style: tabularFigures(
-                    theme.textTheme.labelSmall,
-                  ).copyWith(color: theme.colorScheme.onSurfaceVariant),
-                ),
-              ],
             ),
           ],
         ),
@@ -1756,7 +1989,10 @@ class _HomeDeadlineRow extends StatelessWidget {
 class _HomeExamPreview extends StatelessWidget {
   const _HomeExamPreview({
     required this.exams,
+    required this.totalCount,
     required this.now,
+    required this.collapsed,
+    required this.onToggleCollapsed,
     required this.onOpenAll,
     required this.onAddExam,
     required this.onEditExam,
@@ -1764,7 +2000,10 @@ class _HomeExamPreview extends StatelessWidget {
   });
 
   final List<JiaowuExam> exams;
+  final int totalCount;
   final DateTime now;
+  final bool collapsed;
+  final VoidCallback onToggleCollapsed;
   final VoidCallback onOpenAll;
   final VoidCallback onAddExam;
   final ValueChanged<JiaowuExam> onEditExam;
@@ -1781,78 +2020,99 @@ class _HomeExamPreview extends StatelessWidget {
         Row(
           children: [
             Text('考试安排', style: theme.textTheme.titleMedium),
+            if (collapsed) ...[
+              const SizedBox(width: 6),
+              Text(
+                '$totalCount',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
             const Spacer(),
             TextButton(onPressed: onAddExam, child: const Text('添加')),
             TextButton(onPressed: onOpenAll, child: const Text('查看全部')),
+            IconButton(
+              tooltip: collapsed ? '展开考试安排' : '收起考试安排',
+              onPressed: onToggleCollapsed,
+              icon: RotatedBox(
+                quarterTurns: collapsed ? 3 : 0,
+                child: const Icon(Icons.expand_more, size: 20),
+              ),
+            ),
           ],
         ),
-        const SizedBox(height: AppSpacing.xs),
-        Card(
-          child: visible.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                  ),
-                  child: Row(
+        if (!collapsed) ...[
+          const SizedBox(height: AppSpacing.xs),
+          Card(
+            child: visible.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.lg,
+                      AppSpacing.md,
+                      AppSpacing.lg,
+                      AppSpacing.md,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.event_note_outlined,
+                          color: theme.colorScheme.onSurfaceVariant,
+                          size: 20,
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Expanded(
+                          child: Text(
+                            '暂无考试安排',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : Column(
                     children: [
-                      Icon(
-                        Icons.event_note_outlined,
-                        color: theme.colorScheme.onSurfaceVariant,
-                        size: 20,
-                      ),
-                      const SizedBox(width: AppSpacing.sm),
-                      Expanded(
-                        child: Text(
-                          '暂无考试安排',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
+                      for (var index = 0; index < visible.length; index++) ...[
+                        SwipeActionRow(
+                          backgroundColor: cardColor,
+                          actions: [
+                            SwipeAction(
+                              label: '编辑',
+                              icon: Icons.edit_outlined,
+                              backgroundColor:
+                                  theme.colorScheme.primaryContainer,
+                              foregroundColor:
+                                  theme.colorScheme.onPrimaryContainer,
+                              onPressed: () => onEditExam(visible[index]),
+                            ),
+                            SwipeAction(
+                              label: '删除',
+                              icon: Icons.delete_outline,
+                              backgroundColor: theme.colorScheme.errorContainer,
+                              foregroundColor:
+                                  theme.colorScheme.onErrorContainer,
+                              onPressed: () => onDeleteExam(visible[index]),
+                            ),
+                          ],
+                          child: _HomeExamRow(
+                            exam: visible[index],
+                            now: now,
+                            onTap: () => onEditExam(visible[index]),
                           ),
                         ),
-                      ),
+                        if (index < visible.length - 1)
+                          Divider(
+                            height: 1,
+                            indent: 16,
+                            color: theme.colorScheme.outlineVariant,
+                          ),
+                      ],
                     ],
                   ),
-                )
-              : Column(
-                  children: [
-                    for (var index = 0; index < visible.length; index++) ...[
-                      SwipeActionRow(
-                        backgroundColor: cardColor,
-                        actions: [
-                          SwipeAction(
-                            label: '编辑',
-                            icon: Icons.edit_outlined,
-                            backgroundColor: theme.colorScheme.primaryContainer,
-                            foregroundColor:
-                                theme.colorScheme.onPrimaryContainer,
-                            onPressed: () => onEditExam(visible[index]),
-                          ),
-                          SwipeAction(
-                            label: '删除',
-                            icon: Icons.delete_outline,
-                            backgroundColor: theme.colorScheme.errorContainer,
-                            foregroundColor: theme.colorScheme.onErrorContainer,
-                            onPressed: () => onDeleteExam(visible[index]),
-                          ),
-                        ],
-                        child: _HomeExamRow(
-                          exam: visible[index],
-                          now: now,
-                          onTap: () => onEditExam(visible[index]),
-                        ),
-                      ),
-                      if (index < visible.length - 1)
-                        Divider(
-                          height: 1,
-                          indent: 16,
-                          color: theme.colorScheme.outlineVariant,
-                        ),
-                    ],
-                  ],
-                ),
-        ),
+          ),
+        ],
       ],
     );
   }

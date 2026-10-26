@@ -109,8 +109,7 @@ class _XuexitongPageState extends State<XuexitongPage> {
       final decoded = jsonDecode(raw);
       if (decoded is! Map) return null;
       List<String> read(String key) => [
-        for (final line in (decoded[key] as List? ?? const []))
-          line.toString(),
+        for (final line in (decoded[key] as List? ?? const [])) line.toString(),
       ];
       return (read('diagnostics'), read('warnings'));
     } catch (_) {
@@ -563,7 +562,14 @@ class _XuexitongPageState extends State<XuexitongPage> {
 
   Widget _buildPreviewCard(ThemeData theme, XuexitongMergeResult preview) {
     final pending = _incoming.where((item) => !item.completed).toList()
-      ..sort((left, right) => left.dueAt.compareTo(right.dueAt));
+      ..sort((left, right) {
+        final leftDue = left.dueAt;
+        final rightDue = right.dueAt;
+        if (leftDue == null && rightDue == null) return 0;
+        if (leftDue == null) return 1;
+        if (rightDue == null) return -1;
+        return leftDue.compareTo(rightDue);
+      });
 
     return Card(
       child: Padding(

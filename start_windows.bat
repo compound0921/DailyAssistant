@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title Daily Assistant - Windows
+title Daily Assistant - Hot Reload
 cd /d "%~dp0"
 
 where flutter >nul 2>nul
@@ -11,16 +11,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Running Flutter app on Windows ...
-echo.
-flutter run -d windows
-if errorlevel 1 (
-  echo.
-  echo [ERROR] flutter run failed.
-  pause
-  exit /b 1
-)
-echo.
-echo App stopped.
-pause
+echo Opening Flutter dev console for Windows ...
+start "Daily Assistant - Flutter Windows" cmd /k "flutter run -d windows"
 exit /b 0

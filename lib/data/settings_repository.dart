@@ -9,6 +9,8 @@ import '../models/timetable_appearance.dart';
 class SettingsRepository {
   static const String themeModeKey = 'theme_mode_v1';
   static const String appearanceKey = 'timetable_appearance_v1';
+  static const String homeDeadlineCollapsedKey = 'home_deadline_collapsed_v1';
+  static const String homeExamCollapsedKey = 'home_exam_collapsed_v1';
 
   Future<ThemeMode> loadThemeMode() async {
     final preferences = await SharedPreferences.getInstance();
@@ -42,5 +44,25 @@ class SettingsRepository {
   Future<void> saveTimetableAppearance(TimetableAppearance appearance) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString(appearanceKey, jsonEncode(appearance.toJson()));
+  }
+
+  Future<bool> loadHomeDeadlineCollapsed() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(homeDeadlineCollapsedKey) ?? false;
+  }
+
+  Future<void> saveHomeDeadlineCollapsed(bool collapsed) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(homeDeadlineCollapsedKey, collapsed);
+  }
+
+  Future<bool> loadHomeExamCollapsed() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(homeExamCollapsedKey) ?? false;
+  }
+
+  Future<void> saveHomeExamCollapsed(bool collapsed) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(homeExamCollapsedKey, collapsed);
   }
 }

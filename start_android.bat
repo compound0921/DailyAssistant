@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title Daily Assistant - Android
+title Daily Assistant - Hot Reload
 cd /d "%~dp0"
 
 where flutter >nul 2>nul
@@ -51,7 +51,7 @@ if %WAIT% GEQ 300 (
   pause
   exit /b 1
 )
-timeout /t 2 /nobreak >nul
+"%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul
 goto wait_online
 
 :wait_boot
@@ -66,21 +66,11 @@ if %WAIT% GEQ 300 (
   pause
   exit /b 1
 )
-timeout /t 2 /nobreak >nul
+"%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul
 goto wait_boot_loop
 
 :booted
 echo Emulator is ready.
-echo Running Flutter app on %DEVICE_ID% ...
-echo.
-flutter run -d %DEVICE_ID%
-if errorlevel 1 (
-  echo.
-  echo [ERROR] flutter run failed.
-  pause
-  exit /b 1
-)
-echo.
-echo App stopped.
-pause
+echo Opening Flutter dev console for %DEVICE_ID% ...
+start "Daily Assistant - Flutter Android" cmd /k "flutter run -d %DEVICE_ID%"
 exit /b 0

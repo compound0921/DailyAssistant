@@ -43,4 +43,49 @@ void main() {
 
     expect(edits, 1);
   });
+
+  testWidgets('triggers full swipe only after passing the actions', (
+    tester,
+  ) async {
+    var toggles = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 320,
+              child: SwipeActionRow(
+                backgroundColor: Colors.white,
+                onFullSwipe: () => toggles++,
+                actions: [
+                  SwipeAction(
+                    label: '编辑',
+                    icon: Icons.edit_outlined,
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    onPressed: () {},
+                  ),
+                ],
+                child: Container(
+                  height: 64,
+                  color: Colors.white,
+                  alignment: Alignment.center,
+                  child: const Text('日程'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.drag(find.text('日程'), const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    expect(toggles, 0);
+
+    await tester.drag(find.text('日程'), const Offset(-220, 0));
+    await tester.pumpAndSettle();
+    expect(toggles, 1);
+  });
 }

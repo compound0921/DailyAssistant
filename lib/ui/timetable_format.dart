@@ -21,7 +21,8 @@ String formatDateTime(DateTime date) =>
 String formatMonthDay(DateTime date) => DateFormat('MM-dd').format(date);
 
 /// Deadline 的截止时间文案：今天 / 明天 / 已过期 / 具体日期。
-String formatDueLabel(DateTime dueAt, {DateTime? now}) {
+String formatDueLabel(DateTime? dueAt, {DateTime? now}) {
+  if (dueAt == null) return '无截止时间';
   final current = now ?? DateTime.now();
   final today = DateTime(current.year, current.month, current.day);
   final dueDay = DateTime(dueAt.year, dueAt.month, dueAt.day);
@@ -41,7 +42,8 @@ String formatDueLabel(DateTime dueAt, {DateTime? now}) {
 }
 
 /// 只表达截止时刻，不含「已过期」等状态。
-String formatDueMoment(DateTime dueAt, {DateTime? now}) {
+String formatDueMoment(DateTime? dueAt, {DateTime? now}) {
+  if (dueAt == null) return '无截止时间';
   final current = now ?? DateTime.now();
   final today = DateTime(current.year, current.month, current.day);
   final dueDay = DateTime(dueAt.year, dueAt.month, dueAt.day);
@@ -57,7 +59,8 @@ String formatDueMoment(DateTime dueAt, {DateTime? now}) {
 }
 
 /// 剩余时间，按天/小时/分钟自适应，最高精度到分钟。
-String formatRemaining(DateTime dueAt, {DateTime? now}) {
+String formatRemaining(DateTime? dueAt, {DateTime? now}) {
+  if (dueAt == null) return '无截止时间';
   final current = now ?? DateTime.now();
   final difference = dueAt.difference(current);
   final overdue = difference.isNegative;

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/deadline.dart';
 import 'deadline_colors.dart';
+import 'deadline_tag.dart';
 import 'swipe_action_row.dart';
 import 'timetable_format.dart';
 
@@ -36,7 +37,8 @@ class DeadlineSection extends StatelessWidget {
     final theme = Theme.of(context);
     final expired = [
       for (final item in deadlines)
-        if (!item.completed && item.dueAt.isBefore(now)) item,
+        if (!item.completed && item.dueAt != null && item.dueAt!.isBefore(now))
+          item,
     ];
     final clearBar = _DeadlineClearBar(
       expiredCount: expired.length,
@@ -184,6 +186,7 @@ class DeadlineSection extends StatelessWidget {
       for (final deadline in groups.overdue) tile(deadline),
       for (final deadline in [...groups.today, ...groups.future])
         tile(deadline),
+      for (final deadline in groups.noDue) tile(deadline),
     ];
   }
 
@@ -279,139 +282,152 @@ class _DeadlineTile extends StatelessWidget {
     final urgencyTextColor = deadlineUrgencyTextColor(urgency, theme);
     final note = deadline.note;
 
-    final card = Card(
-      margin: EdgeInsets.zero,
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onEdit,
-        child: Container(
-          decoration: BoxDecoration(
-            border: Border(left: BorderSide(color: urgencyColor, width: 5)),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(4, 6, 4, 10),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Checkbox(value: completed, onChanged: (_) => onToggle()),
-                Expanded(
-                  child: Column(
+    final row = InkWell(
+      onTap: onEdit,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 4, 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Container(
+              width: 4,
+              height: 38,
+              decoration: BoxDecoration(
+                color: urgencyColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Checkbox(value: completed, onChanged: (_) => onToggle()),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (deadline.source != DeadlineSource.manual)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 12, right: 4),
-                              child: Icon(
-                                _deadlineSourceIcon(deadline.source),
-                                size: 16,
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.only(top: 8),
-                              child: Text(
-                                deadline.title,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: completed
-                                    ? theme.textTheme.titleSmall?.copyWith(
-                                        decoration: TextDecoration.lineThrough,
-                                        color:
-                                            theme.colorScheme.onSurfaceVariant,
-                                      )
-                                    : theme.textTheme.titleMedium,
-                              ),
-                            ),
+                      if (deadline.source != DeadlineSource.manual)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12, right: 4),
+                          child: Icon(
+                            _deadlineSourceIcon(deadline.source),
+                            size: 16,
+                            color: theme.colorScheme.onSurfaceVariant,
                           ),
-                          PopupMenuButton<String>(
-                            tooltip: '更多操作',
-                            padding: EdgeInsets.zero,
-                            icon: const Icon(Icons.more_vert, size: 20),
-                            onSelected: (value) {
-                              if (value == 'edit') {
-                                onEdit();
-                              } else {
-                                onDelete();
-                              }
-                            },
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(value: 'edit', child: Text('编辑')),
-                              PopupMenuItem(value: 'delete', child: Text('删除')),
-                            ],
-                          ),
-                        ],
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: Text(
-                          completed ? dueLabel : '$remaining · $dueLabel',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: completed
-                                ? theme.colorScheme.onSurfaceVariant
-                                : urgencyTextColor,
-                            fontWeight: completed ? null : FontWeight.w600,
+                        ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            deadline.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: completed
+                                ? theme.textTheme.titleSmall?.copyWith(
+                                    decoration: TextDecoration.lineThrough,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  )
+                                : theme.textTheme.titleMedium,
                           ),
                         ),
                       ),
-                      if (deadline.courseName != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Text(
-                            deadline.courseName!,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall,
-                          ),
-                        ),
-                      if (note != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2, right: 8),
-                          child: Text(
-                            note,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
                     ],
                   ),
-                ),
-              ],
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            completed
+                                ? dueLabel
+                                : deadline.dueAt == null
+                                ? '无截止时间'
+                                : '$remaining · $dueLabel',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: completed
+                                  ? theme.colorScheme.onSurfaceVariant
+                                  : urgencyTextColor,
+                              fontWeight: completed ? null : FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (deadline.tags.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 180),
+                            child: Wrap(
+                              alignment: WrapAlignment.end,
+                              spacing: 4,
+                              runSpacing: 2,
+                              children: [
+                                for (final tag in deadline.tags)
+                                  DeadlineTagChip(tag: tag),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (deadline.courseName != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        deadline.courseName!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                  if (note != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, right: 8),
+                      child: Text(
+                        note,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: SwipeActionRow(
-        borderRadius: BorderRadius.circular(18),
-        actions: [
-          SwipeAction(
-            label: '编辑',
-            icon: Icons.edit_outlined,
-            backgroundColor: theme.colorScheme.primaryContainer,
-            foregroundColor: theme.colorScheme.onPrimaryContainer,
-            onPressed: onEdit,
-          ),
-          SwipeAction(
-            label: '删除',
-            icon: Icons.delete_outline,
-            backgroundColor: theme.colorScheme.errorContainer,
-            foregroundColor: theme.colorScheme.onErrorContainer,
-            onPressed: onDelete,
-          ),
-        ],
-        child: card,
+      child: Card(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        child: SwipeActionRow(
+          backgroundColor: theme.cardTheme.color ?? theme.colorScheme.surface,
+          onFullSwipe: onToggle,
+          actions: [
+            SwipeAction(
+              label: '编辑',
+              icon: Icons.edit_outlined,
+              backgroundColor: theme.colorScheme.primaryContainer,
+              foregroundColor: theme.colorScheme.onPrimaryContainer,
+              onPressed: onEdit,
+            ),
+            SwipeAction(
+              label: '删除',
+              icon: Icons.delete_outline,
+              backgroundColor: theme.colorScheme.errorContainer,
+              foregroundColor: theme.colorScheme.onErrorContainer,
+              onPressed: onDelete,
+            ),
+          ],
+          child: row,
+        ),
       ),
     );
   }

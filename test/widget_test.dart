@@ -1,8 +1,10 @@
 import 'package:daily_assistant/app.dart';
+import 'package:daily_assistant/data/settings_repository.dart';
 import 'package:daily_assistant/data/timetable_repository.dart';
 import 'package:daily_assistant/models/deadline.dart';
 import 'package:daily_assistant/models/timetable.dart';
 import 'package:daily_assistant/models/timetable_store.dart';
+import 'package:daily_assistant/ui/week_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -104,10 +106,7 @@ Future<void> openTimetable(WidgetTester tester) async {
 Future<void> openSchedule(WidgetTester tester) async {
   final navigationBar = find.byType(NavigationBar);
   final target = navigationBar.evaluate().isNotEmpty
-      ? find.descendant(
-          of: navigationBar,
-          matching: find.text('日程'),
-        )
+      ? find.descendant(of: navigationBar, matching: find.text('日程'))
       : find.descendant(
           of: find.byType(NavigationRail),
           matching: find.text('日程'),
@@ -160,6 +159,37 @@ void main() {
     expect(find.text('第 2 周'), findsOneWidget);
     expect(find.text('高等数学'), findsNothing);
     expect(find.text('大学英语'), findsOneWidget);
+  });
+
+  testWidgets('手机课表左右滑动切换周次', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      DailyAssistantApp(
+        repository: TimetableRepository(),
+        initialStore: buildStore(timetable: buildTwoWeekTimetable()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openTimetable(tester);
+
+    expect(find.text('第 1 周'), findsOneWidget);
+    await tester.fling(
+      find.byType(WeekTimetableView),
+      const Offset(-300, 0),
+      1000,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('第 2 周'), findsOneWidget);
+
+    await tester.fling(
+      find.byType(WeekTimetableView),
+      const Offset(300, 0),
+      1000,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('第 1 周'), findsOneWidget);
   });
 
   testWidgets('点击课程显示详情', (tester) async {
@@ -271,6 +301,84 @@ void main() {
     expect(find.text('待完成 (0)'), findsOneWidget);
   });
 
+  testWidgets('无截止日程与标签显示，日程区可折叠', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final now = DateTime.now();
+    final noDue = Deadline(
+      id: 'no-due',
+      title: '长期整理笔记',
+      dueAt: null,
+      tags: const ['整理'],
+      createdAt: now,
+      updatedAt: now,
+    );
+    final tagged = Deadline(
+      id: 'tagged',
+      title: '交作业',
+      dueAt: now.add(const Duration(days: 1)),
+      tags: const ['作业'],
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await tester.pumpWidget(
+      DailyAssistantApp(
+        repository: TimetableRepository(),
+        initialDeadlines: [tagged, noDue],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('长期整理笔记'), findsOneWidget);
+    expect(find.text('整理'), findsOneWidget);
+    expect(find.text('作业'), findsOneWidget);
+
+    final collapse = find.byTooltip('收起日程');
+    await tester.ensureVisible(collapse);
+    await tester.tap(collapse);
+    await tester.pumpAndSettle();
+
+    expect(find.text('长期整理笔记'), findsNothing);
+    expect(find.byTooltip('展开日程'), findsOneWidget);
+    final preferences = await SharedPreferences.getInstance();
+    expect(
+      preferences.getBool(SettingsRepository.homeDeadlineCollapsedKey),
+      isTrue,
+    );
+  });
+
+  testWidgets('日程完整左滑标记完成并可恢复', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final now = DateTime.now();
+    final deadline = Deadline(
+      id: 'swipe-complete',
+      title: '左滑完成',
+      dueAt: now.add(const Duration(days: 1)),
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await tester.pumpWidget(
+      DailyAssistantApp(
+        repository: TimetableRepository(),
+        initialDeadlines: [deadline],
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openSchedule(tester);
+
+    expect(find.text('待完成 (1)'), findsOneWidget);
+    await tester.drag(find.text('左滑完成'), const Offset(-280, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('已完成 (1)'), findsOneWidget);
+    expect(find.text('待完成 (0)'), findsOneWidget);
+
+    await tester.drag(find.text('左滑完成'), const Offset(-280, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('待完成 (1)'), findsOneWidget);
+    expect(find.text('已完成 (0)'), findsOneWidget);
+  });
+
   testWidgets('可以清除已截止和已完成的日程', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final now = DateTime.now();
@@ -358,6 +466,86 @@ void main() {
     expect(find.text('剩余一小时'), findsOneWidget);
     expect(find.text('待完成 (1)'), findsOneWidget);
     expect(find.textContaining('剩余'), findsWidgets);
+  });
+
+  testWidgets('日程标签可多选并保存', (tester) async {
+    await tester.pumpWidget(
+      DailyAssistantApp(
+        repository: TimetableRepository(),
+        initialStore: buildStore(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openSchedule(tester);
+
+    await tester.tap(find.byType(FloatingActionButton));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '多标签日程');
+
+    final project = find.text('项目');
+    await tester.ensureVisible(project);
+    await tester.tap(project);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('学校'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('多标签日程'), findsOneWidget);
+    expect(find.text('项目'), findsOneWidget);
+    expect(find.text('学校'), findsOneWidget);
+  });
+
+  testWidgets('首页标签筛选支持多选', (tester) async {
+    final now = DateTime.now();
+    final homework = Deadline(
+      id: 'homework',
+      title: '交作业',
+      dueAt: now.add(const Duration(days: 1)),
+      tags: const ['作业'],
+      createdAt: now,
+      updatedAt: now,
+    );
+    final life = Deadline(
+      id: 'life',
+      title: '买生活用品',
+      dueAt: now.add(const Duration(days: 2)),
+      tags: const ['生活'],
+      createdAt: now,
+      updatedAt: now,
+    );
+    final untagged = Deadline(
+      id: 'untagged',
+      title: '无标签事项',
+      dueAt: now.add(const Duration(days: 3)),
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await tester.pumpWidget(
+      DailyAssistantApp(
+        repository: TimetableRepository(),
+        initialDeadlines: [homework, life, untagged],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final filter = find.byTooltip('按标签筛选');
+    await tester.ensureVisible(filter);
+    await tester.tap(filter);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(MenuItemButton, '作业'));
+    await tester.pumpAndSettle();
+    expect(find.text('交作业'), findsOneWidget);
+    expect(find.text('买生活用品'), findsNothing);
+    expect(find.text('无标签事项'), findsNothing);
+
+    await tester.tap(find.widgetWithText(MenuItemButton, '生活'));
+    await tester.pumpAndSettle();
+    expect(find.text('交作业'), findsOneWidget);
+    expect(find.text('买生活用品'), findsOneWidget);
+    expect(find.text('无标签事项'), findsNothing);
   });
 
   testWidgets('可以编辑课程信息并恢复导入时的信息', (tester) async {

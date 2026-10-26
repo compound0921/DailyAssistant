@@ -4,11 +4,13 @@ import '../jiaowu/jiaowu_service.dart';
 import '../models/deadline.dart';
 import '../xuexitong/xuexitong_deadline_mapper.dart';
 import '../xuexitong/xuexitong_service.dart';
+import '../yuketang/yuketang_service.dart';
 import 'app_theme.dart';
 import 'jiaowu_page.dart';
 import 'xuexitong_page.dart';
+import 'yuketang_page.dart';
 
-enum SyncTarget { xuexitong, jiaowu }
+enum SyncTarget { xuexitong, jiaowu, yuketang }
 
 /// “同步”页：学习通与教务共用底部导航的一个入口。
 class SyncPage extends StatefulWidget {
@@ -16,6 +18,7 @@ class SyncPage extends StatefulWidget {
     super.key,
     required this.xuexitongService,
     required this.jiaowuService,
+    required this.yuketangService,
     required this.existingDeadlines,
     required this.onCommitXuexitong,
     this.initialTarget = SyncTarget.xuexitong,
@@ -23,6 +26,7 @@ class SyncPage extends StatefulWidget {
 
   final XuexitongService xuexitongService;
   final JiaowuService jiaowuService;
+  final YuketangService yuketangService;
   final List<Deadline> existingDeadlines;
   final Future<bool> Function(XuexitongMergeResult result) onCommitXuexitong;
   final SyncTarget initialTarget;
@@ -70,6 +74,11 @@ class _SyncPageState extends State<SyncPage> {
                       icon: Icon(Icons.event_note_outlined),
                       label: Text('教务'),
                     ),
+                    ButtonSegment(
+                      value: SyncTarget.yuketang,
+                      icon: Icon(Icons.co_present_outlined),
+                      label: Text('雨课堂'),
+                    ),
                   ],
                   selected: {_target},
                   showSelectedIcon: false,
@@ -90,10 +99,8 @@ class _SyncPageState extends State<SyncPage> {
                 onCommit: widget.onCommitXuexitong,
                 embedded: true,
               ),
-              JiaowuPage(
-                service: widget.jiaowuService,
-                embedded: true,
-              ),
+              JiaowuPage(service: widget.jiaowuService, embedded: true),
+              YuketangPage(service: widget.yuketangService, embedded: true),
             ],
           ),
         ),

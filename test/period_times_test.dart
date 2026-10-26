@@ -51,4 +51,28 @@ void main() {
     expect(range.start, 1);
     expect(range.end, 1);
   });
+
+  test('课程显示时间优先套用当前作息', () {
+    final schedule = PeriodSchedule.standard.withTime(
+      const PeriodTime(1, 9 * 60, 50),
+    );
+
+    final span = resolveMeetingSpan(
+      schedule: schedule,
+      startMinute: 8 * 60,
+      endMinute: 9 * 60 + 40,
+      periodLabel: '1-2节',
+    );
+    expect(span.startMinute, 9 * 60);
+    expect(span.endMinute, schedule.spanFor(1, 2)?.endMinute);
+
+    final fallback = resolveMeetingSpan(
+      schedule: schedule,
+      startMinute: 8 * 60,
+      endMinute: 9 * 60 + 40,
+      periodLabel: null,
+    );
+    expect(fallback.startMinute, 8 * 60);
+    expect(fallback.endMinute, 9 * 60 + 40);
+  });
 }

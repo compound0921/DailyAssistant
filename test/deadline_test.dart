@@ -1,5 +1,6 @@
 import 'package:daily_assistant/data/deadline_repository.dart';
 import 'package:daily_assistant/models/deadline.dart';
+import 'package:daily_assistant/notifications/deadline_notifications.dart';
 import 'package:daily_assistant/ui/timetable_format.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -11,6 +12,8 @@ Deadline buildDeadline({
   String? courseName,
   String? note,
   bool completed = false,
+  List<String> tags = const [],
+  int? reminderOffsetMinutes,
 }) {
   final now = DateTime(2026, 10, 24, 12);
   return Deadline(
@@ -20,6 +23,8 @@ Deadline buildDeadline({
     courseName: courseName,
     note: note,
     completed: completed,
+    tags: tags,
+    reminderOffsetMinutes: reminderOffsetMinutes,
     createdAt: now,
     updatedAt: now,
   );
@@ -132,6 +137,82 @@ void main() {
       formatRemaining(DateTime(2026, 10, 24, 11, 15), now: now),
       '已过期 45 分钟',
     );
+  });
+
+  test('无截止日程归入待完成最后，且不显示剩余时间', () {
+    final now = DateTime(2026, 10, 24, 12);
+    final groups = groupDeadlines([
+      Deadline(
+        id: 'no-due',
+        title: '长期事项',
+        dueAt: null,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      buildDeadline(id: 'future', dueAt: DateTime(2026, 10, 25, 9)),
+    ], now: now);
+
+    expect(groups.noDue.map((item) => item.id), ['no-due']);
+    expect(groups.incomplete.map((item) => item.id), ['future', 'no-due']);
+    expect(groups.incompleteCount, 2);
+    expect(formatDueLabel(null), '无截止时间');
+    expect(formatDueMoment(null), '无截止时间');
+    expect(formatRemaining(null), '无截止时间');
+  });
+
+  test('多个标签与提醒提前量随日程保存', () async {
+    final repository = DeadlineRepository();
+    await repository.save([
+      buildDeadline(tags: const ['作业', '学校'], reminderOffsetMinutes: 60),
+    ]);
+
+    final loaded = (await repository.load()).single;
+    expect(loaded.tags, ['作业', '学校']);
+    expect(loaded.hasTag('学校'), isTrue);
+    expect(loaded.reminderOffsetMinutes, 60);
+    expect(loaded.reminderAt, loaded.dueAt!.subtract(const Duration(hours: 1)));
+  });
+
+  test('旧版单标签数据可迁移为多标签', () {
+    final deadline = Deadline.fromJson({
+      'id': 'legacy',
+      'title': '旧日程',
+      'dueAt': '2026-10-25T12:00:00.000',
+      'tag': '作业',
+      'createdAt': '2026-10-24T12:00:00.000',
+      'updatedAt': '2026-10-24T12:00:00.000',
+    });
+
+    expect(deadline.tags, ['作业']);
+  });
+
+  test('标签去空白、去重并保持顺序', () {
+    expect(normalizeDeadlineTags([' 作业 ', '学校', '作业', '', '生活']), [
+      '作业',
+      '学校',
+      '生活',
+    ]);
+  });
+
+  test('无截止或不提醒时没有提醒时刻', () {
+    final now = DateTime(2026, 10, 24, 12);
+    final noReminder = buildDeadline().copyWith(clearReminder: true);
+    expect(noReminder.reminderAt, isNull);
+
+    final noDue = Deadline(
+      id: 'no-due',
+      title: '长期事项',
+      dueAt: null,
+      reminderOffsetMinutes: 0,
+      createdAt: now,
+      updatedAt: now,
+    );
+    expect(noDue.reminderAt, isNull);
+  });
+
+  test('通知 ID 对同一日程保持稳定', () {
+    expect(notificationId('deadline-1'), notificationId('deadline-1'));
+    expect(notificationId('deadline-1'), isNot(notificationId('deadline-2')));
   });
 
   test('清空后读取为空', () async {

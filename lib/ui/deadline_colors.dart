@@ -4,7 +4,7 @@ import '../models/deadline.dart';
 import 'app_theme.dart';
 
 /// 按截止时间划分的紧急程度。
-enum DeadlineUrgency { overdue, today, soon, week, later, completed }
+enum DeadlineUrgency { overdue, today, soon, week, later, noDue, completed }
 
 DeadlineUrgency deadlineUrgency(
   Deadline deadline, {
@@ -15,6 +15,7 @@ DeadlineUrgency deadlineUrgency(
 
   final current = now ?? DateTime.now();
   final due = deadline.dueAt;
+  if (due == null) return DeadlineUrgency.noDue;
   if (due.isBefore(current)) return DeadlineUrgency.overdue;
 
   final today = DateTime(current.year, current.month, current.day);
@@ -34,7 +35,7 @@ Color deadlineUrgencyColor(DeadlineUrgency urgency, ThemeData theme) {
       dark ? const Color(0xFFFBBF24) : const Color(0xFFF97316),
     DeadlineUrgency.soon =>
       dark ? const Color(0xFFFB923C) : const Color(0xFFEA580C),
-    DeadlineUrgency.week => theme.colorScheme.primary,
+    DeadlineUrgency.week || DeadlineUrgency.noDue => theme.colorScheme.primary,
     DeadlineUrgency.later => theme.colorScheme.onSurfaceVariant,
     DeadlineUrgency.completed => theme.colorScheme.outlineVariant,
   };
@@ -49,7 +50,7 @@ Color deadlineUrgencyTextColor(DeadlineUrgency urgency, ThemeData theme) {
       dark ? const Color(0xFFFBBF24) : const Color(0xFFC2410C),
     DeadlineUrgency.soon =>
       dark ? const Color(0xFFFB923C) : const Color(0xFF9A3412),
-    DeadlineUrgency.week =>
+    DeadlineUrgency.week || DeadlineUrgency.noDue =>
       dark ? AppColors.darkPrimaryText : AppColors.lightPrimaryText,
     DeadlineUrgency.later => theme.colorScheme.onSurfaceVariant,
     DeadlineUrgency.completed => theme.colorScheme.onSurfaceVariant,
@@ -63,6 +64,7 @@ String deadlineUrgencyLabel(DeadlineUrgency urgency) {
     DeadlineUrgency.soon => '3 天内',
     DeadlineUrgency.week => '7 天内',
     DeadlineUrgency.later => '更远',
+    DeadlineUrgency.noDue => '无截止',
     DeadlineUrgency.completed => '已完成',
   };
 }

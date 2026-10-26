@@ -45,6 +45,7 @@ class _WeekTimetableViewState extends State<WeekTimetableView> {
   late int _selectedWeek;
   final ScrollController _headerScrollController = ScrollController();
   final ScrollController _bodyScrollController = ScrollController();
+  double _weekDragDistance = 0;
 
   int get _weekCount => widget.timetable.semester.weekCount;
 
@@ -96,6 +97,15 @@ class _WeekTimetableViewState extends State<WeekTimetableView> {
   void _selectWeek(int week) {
     if (week < 1 || week > _weekCount || week == _selectedWeek) return;
     setState(() => _selectedWeek = week);
+  }
+
+  void _handleWeekSwipe(DragEndDetails details) {
+    final distance = _weekDragDistance;
+    _weekDragDistance = 0;
+    final velocity = details.primaryVelocity ?? 0;
+    if (distance.abs() < 48 && velocity.abs() < 250) return;
+    final toNext = distance.abs() >= 48 ? distance < 0 : velocity < 0;
+    _selectWeek(toNext ? _selectedWeek + 1 : _selectedWeek - 1);
   }
 
   @override
@@ -165,73 +175,89 @@ class _WeekTimetableViewState extends State<WeekTimetableView> {
           children: [
             _buildWeekBar(context),
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                child: Column(
-                  children: [
-                    SizedBox(
-                      height: _headerHeight,
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: timeColumnWidth,
-                            child: _buildTimeHeader(context),
-                          ),
-                          Expanded(
-                            child: narrow
-                                ? headers
-                                : SingleChildScrollView(
-                                    controller: _headerScrollController,
-                                    scrollDirection: Axis.horizontal,
-                                    physics:
-                                        const NeverScrollableScrollPhysics(),
-                                    child: SizedBox(
-                                      width: dayContentWidth,
-                                      child: headers,
-                                    ),
-                                  ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: SingleChildScrollView(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragStart: narrow
+                    ? (_) => _weekDragDistance = 0
+                    : null,
+                onHorizontalDragUpdate: narrow
+                    ? (details) => _weekDragDistance += details.delta.dx
+                    : null,
+                onHorizontalDragCancel: narrow
+                    ? () => _weekDragDistance = 0
+                    : null,
+                onHorizontalDragEnd: narrow ? _handleWeekSwipe : null,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        height: _headerHeight,
                         child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             SizedBox(
                               width: timeColumnWidth,
-                              height: gridHeight,
-                              child: _TimeColumn(
-                                schedule: widget.periodSchedule,
-                                rowHeight: rowHeight,
-                                width: timeColumnWidth,
-                                compact: narrow,
-                                onTimeTap: (time) => showPeriodTimeEditor(
-                                  context,
-                                  time,
-                                  widget.onPeriodTimeChanged,
-                                ),
-                              ),
+                              child: _buildTimeHeader(context),
                             ),
                             Expanded(
                               child: narrow
-                                  ? SizedBox(height: gridHeight, child: columns)
+                                  ? headers
                                   : SingleChildScrollView(
-                                      controller: _bodyScrollController,
+                                      controller: _headerScrollController,
                                       scrollDirection: Axis.horizontal,
+                                      physics:
+                                          const NeverScrollableScrollPhysics(),
                                       child: SizedBox(
                                         width: dayContentWidth,
-                                        height: gridHeight,
-                                        child: columns,
+                                        child: headers,
                                       ),
                                     ),
                             ),
                           ],
                         ),
                       ),
-                    ),
-                  ],
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(
+                                width: timeColumnWidth,
+                                height: gridHeight,
+                                child: _TimeColumn(
+                                  schedule: widget.periodSchedule,
+                                  rowHeight: rowHeight,
+                                  width: timeColumnWidth,
+                                  compact: narrow,
+                                  onTimeTap: (time) => showPeriodTimeEditor(
+                                    context,
+                                    time,
+                                    widget.onPeriodTimeChanged,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: narrow
+                                    ? SizedBox(
+                                        height: gridHeight,
+                                        child: columns,
+                                      )
+                                    : SingleChildScrollView(
+                                        controller: _bodyScrollController,
+                                        scrollDirection: Axis.horizontal,
+                                        child: SizedBox(
+                                          width: dayContentWidth,
+                                          height: gridHeight,
+                                          child: columns,
+                                        ),
+                                      ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -931,14 +957,17 @@ Future<void> showMeetingDetail(
   if (course == null) return Future<void>.value();
 
   final labelRange = periodRangeFromLabel(meeting.periodLabel);
-  final span = labelRange == null
-      ? null
-      : periodSchedule.spanFor(labelRange.start, labelRange.end);
+  final displaySpan = resolveMeetingSpan(
+    schedule: periodSchedule,
+    startMinute: meeting.startMinute,
+    endMinute: meeting.endMinute,
+    periodLabel: meeting.periodLabel,
+  );
   final range =
       labelRange ??
       periodSchedule.rangeForMinutes(meeting.startMinute, meeting.endMinute);
-  final startMinute = span?.startMinute ?? meeting.startMinute;
-  final endMinute = span?.endMinute ?? meeting.endMinute;
+  final startMinute = displaySpan.startMinute;
+  final endMinute = displaySpan.endMinute;
   final periodText = range.start == range.end
       ? '第 ${range.start} 节'
       : '第 ${range.start}-${range.end} 节';
@@ -1005,14 +1034,17 @@ Future<void> showAdjustedMeetingDetail(
   final meeting = effective.meeting;
   final course = effective.course;
   final labelRange = periodRangeFromLabel(meeting.periodLabel);
-  final span = labelRange == null
-      ? null
-      : periodSchedule.spanFor(labelRange.start, labelRange.end);
+  final displaySpan = resolveMeetingSpan(
+    schedule: periodSchedule,
+    startMinute: meeting.startMinute,
+    endMinute: meeting.endMinute,
+    periodLabel: meeting.periodLabel,
+  );
   final range =
       labelRange ??
       periodSchedule.rangeForMinutes(meeting.startMinute, meeting.endMinute);
-  final startMinute = span?.startMinute ?? meeting.startMinute;
-  final endMinute = span?.endMinute ?? meeting.endMinute;
+  final startMinute = displaySpan.startMinute;
+  final endMinute = displaySpan.endMinute;
   final periodText = range.start == range.end
       ? '第 ${range.start} 节'
       : '第 ${range.start}-${range.end} 节';

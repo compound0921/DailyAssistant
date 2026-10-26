@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/deadline.dart';
 import '../xuexitong/xuexitong_deadline_mapper.dart';
@@ -74,10 +77,15 @@ class _XuexitongPageState extends State<XuexitongPage> {
   Future<void> _loadState() async {
     try {
       final state = await _service.loadStoredState();
+      final report = await _loadLastReport();
       if (!mounted) return;
       setState(() {
         _state = state;
         _loading = false;
+        if (report != null) {
+          _diagnostics = report.$1;
+          _warnings = report.$2;
+        }
         final account = state.account;
         if (account != null && _accountController.text.isEmpty) {
           _accountController.text = account;
@@ -89,6 +97,24 @@ class _XuexitongPageState extends State<XuexitongPage> {
         _loading = false;
         _error = '读取本地登录数据失败：$error';
       });
+    }
+  }
+
+  /// 读取上一次同步留下的诊断，重启后仍能看到当时的判定结果。
+  Future<(List<String>, List<String>)?> _loadLastReport() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final raw = preferences.getString('xuexitong_last_report_v1');
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      List<String> read(String key) => [
+        for (final line in (decoded[key] as List? ?? const []))
+          line.toString(),
+      ];
+      return (read('diagnostics'), read('warnings'));
+    } catch (_) {
+      return null;
     }
   }
 

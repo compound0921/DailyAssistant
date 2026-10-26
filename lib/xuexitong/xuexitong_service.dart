@@ -227,7 +227,11 @@ class XuexitongService {
       diagnostics,
     );
     final fallbackFuture = workTasks == null
-        ? _fetchFallbackTasks(session, warnings).whenComplete(workWatch.stop)
+        ? _fetchFallbackTasks(
+            session,
+            warnings,
+            diagnostics,
+          ).whenComplete(workWatch.stop)
         : Future<List<ChaoxingTaskItem>>.value(const []);
 
     final practice = await practiceFuture;
@@ -249,6 +253,7 @@ class XuexitongService {
     );
 
     await _store.saveLastSync(DateTime.now());
+    await _saveSyncReport(diagnostics, warnings);
     return XuexitongSyncResult(
       tasks: tasks,
       warnings: warnings,
@@ -256,6 +261,26 @@ class XuexitongService {
       diagnostics: diagnostics,
       reconciledCourseNames: practice.reconciledCourseNames,
     );
+  }
+
+  /// 把最近一次同步的诊断留档，方便重启后回看（也便于排查某门课为什么没导入）。
+  Future<void> _saveSyncReport(
+    List<String> diagnostics,
+    List<String> warnings,
+  ) async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setString(
+        'xuexitong_last_report_v1',
+        jsonEncode({
+          'at': DateTime.now().toIso8601String(),
+          'diagnostics': diagnostics,
+          'warnings': warnings,
+        }),
+      );
+    } catch (_) {
+      // 留档失败不影响同步本身。
+    }
   }
 
   Future<ChaoxingSession> _relogin() async {
@@ -410,6 +435,7 @@ class XuexitongService {
   Future<List<ChaoxingTaskItem>> _fetchFallbackTasks(
     ChaoxingSession session,
     List<String> warnings,
+    List<String> diagnostics,
   ) async {
     final List<_FallbackCourse> courses;
     try {
@@ -441,7 +467,7 @@ class XuexitongService {
     }
     if (activeCourses.isEmpty) return const [];
 
-    const concurrency = 4;
+    const concurrency = 6;
     final results = <_FallbackCourseTasks>[];
     for (var start = 0; start < activeCourses.length; start += concurrency) {
       final batch = activeCourses.skip(start).take(concurrency).toList();
@@ -450,54 +476,80 @@ class XuexitongService {
           batch.map((course) => _fetchFallbackCourseTasks(session, course)),
         ),
       );
-      if (start + concurrency < activeCourses.length) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
     }
+    final listElapsed = fallbackWatch.elapsedMilliseconds;
 
     final tasks = <ChaoxingTaskItem>[];
-    var detailFetches = 0;
-    var detailLimitWarningAdded = false;
-    const maxDetailFetches = 10;
+    final pending = <({ChaoxingCourseTask task, String courseName})>[];
 
     for (final result in results) {
       warnings.addAll(result.warnings);
       for (final task in result.tasks) {
-        var mapped = _mapCourseTask(task, result.course.courseName);
-
-        // 列表页常常只给发布时间；截止时间只在任务详情页的“作答时间/考试时间”里。
-        if (mapped == null && task.url.trim().isNotEmpty) {
-          if (detailFetches < maxDetailFetches) {
-            detailFetches++;
-            final dueAt = await _fetchDetailDueTime(session, task.url);
-            if (dueAt != null) {
-              mapped = _mapCourseTask(
-                task,
-                result.course.courseName,
-                dueAt: dueAt,
-              );
-            }
-            await Future<void>.delayed(const Duration(milliseconds: 200));
-          } else if (!detailLimitWarningAdded) {
-            detailLimitWarningAdded = true;
-            warnings.add('详情请求已达上限（$maxDetailFetches 次），剩余任务未尝试读取详情。');
-          }
+        final mapped = _mapCourseTask(task, result.course.courseName);
+        if (mapped != null) {
+          tasks.add(mapped);
+          continue;
         }
-
-        if (mapped == null) {
+        if (task.url.trim().isEmpty) {
           warnings.add(
             '「${result.course.courseName} · ${task.title}」未识别到截止时间'
             '（列表可能只提供发布时间），已跳过',
           );
           continue;
         }
-        tasks.add(mapped);
+        pending.add((task: task, courseName: result.course.courseName));
       }
     }
 
+    // 列表页常常只给发布时间；截止时间只在任务详情页的“作答时间/考试时间”里。
+    // 详情按批并发，避免十条任务串行排队。
+    const maxDetailFetches = 10;
+    const detailConcurrency = 4;
+    final detailTasks = pending.take(maxDetailFetches).toList();
+    final dueByUrl = <String, DateTime?>{};
+    final detailWatch = Stopwatch()..start();
+    for (var start = 0; start < detailTasks.length; start += detailConcurrency) {
+      final batch = detailTasks.skip(start).take(detailConcurrency).toList();
+      final dues = await Future.wait(
+        batch.map((item) => _fetchDetailDueTime(session, item.task.url)),
+      );
+      for (var index = 0; index < batch.length; index++) {
+        dueByUrl[batch[index].task.url] = dues[index];
+      }
+    }
+    detailWatch.stop();
+
+    for (final item in detailTasks) {
+      final dueAt = dueByUrl[item.task.url];
+      final mapped = dueAt == null
+          ? null
+          : _mapCourseTask(item.task, item.courseName, dueAt: dueAt);
+      if (mapped != null) {
+        tasks.add(mapped);
+        continue;
+      }
+      warnings.add(
+        '「${item.courseName} · ${item.task.title}」未识别到截止时间'
+        '（列表和详情都没有给出），已跳过',
+      );
+    }
+
+    if (pending.length > maxDetailFetches) {
+      warnings.add(
+        '详情请求已达上限（$maxDetailFetches 次），'
+        '${pending.length - maxDetailFetches} 条任务未尝试读取详情。',
+      );
+    }
+
+    diagnostics.add(
+      '作业/考试回退：${activeCourses.length} 门课程（跳过 $skippedStale 门），'
+      '列表 $listElapsed ms，详情 ${detailTasks.length} 次/'
+      '${detailWatch.elapsedMilliseconds}ms',
+    );
     debugPrint(
       '[XXT] fallback courses=${activeCourses.length} skipped=$skippedStale '
-      'elapsed=${fallbackWatch.elapsedMilliseconds}ms',
+      'list=${listElapsed}ms detail=${detailWatch.elapsedMilliseconds}ms '
+      'total=${fallbackWatch.elapsedMilliseconds}ms',
     );
     return tasks;
   }
@@ -708,7 +760,6 @@ class XuexitongService {
     var infoNetMs = 0;
     var courseRequests = 0;
     var courseNetMs = 0;
-    var delayMs = 0;
     var limitWarningAdded = false;
     const maxInfoRequests = 50;
 
@@ -729,10 +780,10 @@ class XuexitongService {
     // 预热官方 UA，避免并发请求各自生成不同的设备 ID。
     await _officialUserAgent();
 
-    // 活动列表 4 门一批预取，降低串行等待。
+    // 活动列表按批并发预取；并发过高容易被风控，8 门一批比较稳。
     final bodies = <String, Map<String, dynamic>>{};
     final bodyErrors = <String, Object>{};
-    const courseConcurrency = 4;
+    const courseConcurrency = 8;
     for (var start = 0; start < toCheck.length; start += courseConcurrency) {
       final batch = toCheck.skip(start).take(courseConcurrency).toList();
       await Future.wait(
@@ -762,10 +813,6 @@ class XuexitongService {
           }
         }),
       );
-      if (start + courseConcurrency < toCheck.length) {
-        delayMs += 50;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
     }
 
     for (final course in toCheck) {
@@ -801,12 +848,41 @@ class XuexitongService {
             );
           }
 
-          if (mission.id.isEmpty || mission.status != 1) continue;
-          if (!_isPracticeActivity(mission)) {
-            final rawName = mission.nameOne.trim().isNotEmpty
-                ? mission.nameOne.trim()
-                : mission.nameTwo.trim();
-            runningNames.add(rawName.isEmpty ? '未命名活动' : rawName);
+          if (mission.id.isEmpty) {
+            diagnostics.add(
+              '跳过：${course.courseName} · ${_diagnosticName(mission)}（缺少活动 id）',
+            );
+            continue;
+          }
+
+          // 只收还没截止的活动：进行中（status=1）或已排到未来（status=0）。
+          // 已结束的历史活动一律跳过，不管是不是当天的。
+          final running = mission.status == 1;
+          final upcoming =
+              mission.status == 0 && start != null && start.isAfter(now);
+          final practice = _isPracticeActivity(mission);
+          if (!running && !upcoming) {
+            if (practice) {
+              diagnostics.add(
+                '跳过：${course.courseName} · ${_diagnosticName(mission)}'
+                '（status=${mission.status}，活动已结束或未开放'
+                '${start == null ? '' : '，开始于 ${_shortMoment(start)}'}）',
+              );
+            }
+            continue;
+          }
+
+          if (!practice) {
+            if (running) {
+              final rawName = mission.nameOne.trim().isNotEmpty
+                  ? mission.nameOne.trim()
+                  : mission.nameTwo.trim();
+              runningNames.add(rawName.isEmpty ? '未命名活动' : rawName);
+              diagnostics.add(
+                '未匹配：${course.courseName} · ${_diagnosticName(mission)}'
+                '（type=${mission.activeType}，不算随堂练习）',
+              );
+            }
             continue;
           }
 
@@ -815,41 +891,62 @@ class XuexitongService {
             '（activeType=${mission.activeType}, status=${mission.status}）',
           );
 
+          DateTime? endTime;
           if (infoRequests >= maxInfoRequests) {
             if (!limitWarningAdded) {
               limitWarningAdded = true;
-              warnings.add('随堂练习详情请求已达上限（$maxInfoRequests 次），部分活动未导入。');
+              warnings.add(
+                '随堂练习详情请求已达上限（$maxInfoRequests 次），'
+                '其余活动按估算结束时间导入。',
+              );
             }
-            continue;
+          } else {
+            infoRequests++;
+            final infoWatch = Stopwatch()..start();
+            endTime = await _fetchActivityEndTime(
+              session,
+              mission.id,
+              diagnostics,
+            );
+            infoWatch.stop();
+            infoNetMs += infoWatch.elapsedMilliseconds;
           }
-          infoRequests++;
 
-          final infoWatch = Stopwatch()..start();
-          final endTime = await _fetchActivityEndTime(session, mission.id);
-          infoWatch.stop();
-          infoNetMs += infoWatch.elapsedMilliseconds;
-          delayMs += 50;
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-
-          // 平台没给结束时间时，只能按“活动开始 + 默认 1 小时”估算；
-          // 开始时间也拿不到就直接跳过，不能用当前时间兜底，否则旧活动会被当成未来活动。
-          final due = endTime ?? _estimateActivityEnd(mission);
           final title = _activityTitle(mission);
-          if (due == null) {
-            warnings.add('「${course.courseName} · $title」未获取到开始/结束时间，已跳过');
-            continue;
-          }
-          if (!due.isAfter(now)) {
+          final DateTime due;
+          if (endTime != null && endTime.isAfter(now)) {
+            due = endTime;
+          } else if (endTime != null) {
             diagnostics.add(
               '跳过已过期：${course.courseName} · $title'
-              '（${due.toIso8601String()}）',
+              '（${endTime.toIso8601String()}）',
             );
             continue;
-          }
-          if (endTime == null) {
-            warnings.add(
-              '「${course.courseName} · $title」未返回结束时间，'
-              '按活动开始时间 + 1 小时估算。',
+          } else {
+            // 平台没给结束时间时，随堂练习通常是老师手动结束。按“活动开始当天 23:59”
+            // 估算，既能留下当天仍在进行的练习，也不会把几天前的旧活动一直往后挪。
+            if (start == null) {
+              warnings.add('「${course.courseName} · $title」未获取到开始/结束时间，已跳过');
+              continue;
+            }
+            final estimated = DateTime(
+              start.year,
+              start.month,
+              start.day,
+              23,
+              59,
+            );
+            if (!estimated.isAfter(now)) {
+              diagnostics.add(
+                '跳过已过期：${course.courseName} · $title'
+                '（无结束时间，开始于 ${_shortMoment(start)}，按当天 23:59 已过）',
+              );
+              continue;
+            }
+            due = estimated;
+            diagnostics.add(
+              '「${course.courseName} · $title」平台未给结束时间，'
+              '按 ${_shortMoment(due)} 估算',
             );
           }
 
@@ -900,13 +997,12 @@ class XuexitongService {
     diagnostics.add(
       '耗时：课程列表 ${coursesWatch.elapsedMilliseconds}ms，'
       '课堂活动 $courseRequests 次/${courseNetMs}ms，'
-      '活动详情 $infoRequests 次/${infoNetMs}ms，'
-      '请求间隔 ${delayMs}ms',
+      '活动详情 $infoRequests 次/${infoNetMs}ms',
     );
     debugPrint(
       '[XXT] courses=${coursesWatch.elapsedMilliseconds}ms '
       'courseReqs=$courseRequests courseNet=${courseNetMs}ms '
-      'infoReqs=$infoRequests infoNet=${infoNetMs}ms delays=${delayMs}ms',
+      'infoReqs=$infoRequests infoNet=${infoNetMs}ms',
     );
     diagnostics.add('随堂练习入库：${tasks.length} 条');
     return _PracticeActivitiesResult(
@@ -951,27 +1047,35 @@ class XuexitongService {
   Future<DateTime?> _fetchActivityEndTime(
     ChaoxingSession session,
     String activeId,
+    List<String> diagnostics,
   ) async {
     final uri = Uri.parse(
       'https://mobilelearn.chaoxing.com/v2/apis/active/getPPTActiveInfo',
     ).replace(queryParameters: {'activeId': activeId});
 
     try {
-      final info = ChaoxingActiveInfo.parse(
-        await _getJson(session, uri, officialUserAgent: true),
-      );
-      final endTime = info?.endTime;
-      if (endTime != null) return _fromEpoch(endTime);
-    } catch (_) {
-      // 详情失败时退回默认时长估算。
+      final body = await _getJson(session, uri, officialUserAgent: true);
+      final info = ChaoxingActiveInfo.parse(body);
+      if (info == null) {
+        diagnostics.add('活动 $activeId 详情无数据（result=${body['result']}）');
+        return null;
+      }
+      final endTime = info.endTime;
+      if (endTime == null || endTime <= 0) {
+        diagnostics.add('活动 $activeId 详情未返回 endtime');
+        return null;
+      }
+      return _fromEpoch(endTime);
+    } catch (error) {
+      diagnostics.add('活动 $activeId 详情请求失败：$error');
     }
     return null;
   }
 
-  DateTime? _estimateActivityEnd(ChaoxingMission mission) {
-    final start = _fromEpoch(mission.startTime);
-    if (start == null) return null;
-    return start.add(const Duration(hours: 1));
+  String _shortMoment(DateTime moment) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${two(moment.month)}-${two(moment.day)} '
+        '${two(moment.hour)}:${two(moment.minute)}';
   }
 
   DateTime? _fromEpoch(int value) {

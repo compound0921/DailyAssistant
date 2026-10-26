@@ -4,6 +4,7 @@ import '../models/timetable.dart';
 import '../models/timetable_appearance.dart';
 import 'timetable_appearance_page.dart';
 import 'timetable_format.dart';
+import 'update_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
@@ -73,6 +74,12 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   bool get _canEdit => widget.timetable != null && !_saving;
+
+  Future<void> _openUpdate() async {
+    await Navigator.of(
+      context,
+    ).push<void>(MaterialPageRoute(builder: (_) => const UpdatePage()));
+  }
 
   Future<void> _pickDate() async {
     final current = _startDate ?? mondayOf(DateTime.now());
@@ -267,6 +274,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ],
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.system_update_outlined),
+                  title: const Text('检查更新'),
+                  subtitle: const Text('从 GitHub Releases 获取新版本'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _openUpdate,
+                ),
+              ),
             ],
           ),
         ),

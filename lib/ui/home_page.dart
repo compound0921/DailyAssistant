@@ -29,6 +29,7 @@ import 'deadline_edit_page.dart';
 import 'deadline_section.dart';
 import 'deadline_tag.dart';
 import 'exam_edit_page.dart';
+import 'home_schedule_mapper.dart';
 import 'import_page.dart';
 import 'settings_page.dart';
 import 'swipe_action_row.dart';
@@ -53,6 +54,7 @@ class HomePage extends StatefulWidget {
     this.initialDeadlines = const [],
     this.initialDeadlineCollapsed = false,
     this.initialExamCollapsed = false,
+    this.initialYuketangCollapsed = false,
   });
 
   final TimetableRepository repository;
@@ -60,6 +62,7 @@ class HomePage extends StatefulWidget {
   final SettingsRepository? settingsRepository;
   final bool initialDeadlineCollapsed;
   final bool initialExamCollapsed;
+  final bool initialYuketangCollapsed;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final TimetableAppearance appearance;
@@ -90,6 +93,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   YuketangSnapshot? _yuketangSnapshot;
   bool _deadlineCollapsed = false;
   bool _examCollapsed = false;
+  bool _yuketangCollapsed = false;
   Set<String> _deadlineTagFilters = {};
   bool _deadlinePinEnabled = true;
   bool _deadlineReminderEnabled = true;
@@ -105,6 +109,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _deadlines = widget.initialDeadlines;
     _deadlineCollapsed = widget.initialDeadlineCollapsed;
     _examCollapsed = widget.initialExamCollapsed;
+    _yuketangCollapsed = widget.initialYuketangCollapsed;
     _loadJiaowuSnapshot();
     unawaited(_loadYuketangSnapshot());
     unawaited(_loadNotificationSettings());
@@ -146,6 +151,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _toggleExamCollapsed() {
     setState(() => _examCollapsed = !_examCollapsed);
     unawaited(_settingsRepository.saveHomeExamCollapsed(_examCollapsed));
+  }
+
+  void _toggleYuketangCollapsed() {
+    setState(() => _yuketangCollapsed = !_yuketangCollapsed);
+    unawaited(
+      _settingsRepository.saveHomeYuketangCollapsed(_yuketangCollapsed),
+    );
   }
 
   List<String> get _deadlineTags {
@@ -604,6 +616,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  /// 把首页批量选择的考试/雨课堂条目写入日程；已存在的 ID 跳过。
+  Future<void> _addSelectedToSchedule(List<Deadline> candidates) async {
+    final existingIds = {for (final item in _deadlines) item.id};
+    final added = <Deadline>[];
+    var skipped = 0;
+    for (final item in candidates) {
+      if (!existingIds.add(item.id)) {
+        skipped++;
+        continue;
+      }
+      added.add(item);
+    }
+    if (added.isEmpty) {
+      _showMessage('所选项目都已在日程中');
+      return;
+    }
+    if (!await _persistDeadlines([..._deadlines, ...added])) return;
+    if (!mounted) return;
+    _showMessage(
+      skipped == 0
+          ? '已添加 ${added.length} 条日程'
+          : '已添加 ${added.length} 条日程，$skipped 条已在日程中',
+    );
+  }
+
   Future<void> _editDeadline(Deadline deadline) async {
     final updated = await Navigator.of(context).push<Deadline>(
       MaterialPageRoute(
@@ -1031,9 +1068,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           deadlines: _deadlines,
           deadlineCollapsed: _deadlineCollapsed,
           examCollapsed: _examCollapsed,
+          yuketangCollapsed: _yuketangCollapsed,
           deadlineTagFilters: _deadlineTagFilters,
           onToggleDeadlineCollapsed: _toggleDeadlineCollapsed,
           onToggleExamCollapsed: _toggleExamCollapsed,
+          onToggleYuketangCollapsed: _toggleYuketangCollapsed,
           onDeadlineTagFiltersChanged: (tags) {
             setState(() => _deadlineTagFilters = tags);
           },
@@ -1048,6 +1087,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           onAddExam: _addJiaowuExam,
           onEditExam: _editJiaowuExam,
           onDeleteExam: _deleteJiaowuExam,
+          onAddToSchedule: _addSelectedToSchedule,
           onEditDeadline: _editDeadline,
           onDeleteDeadline: _deleteDeadline,
           onToggleDeadline: _toggleDeadline,
@@ -1114,9 +1154,11 @@ class _HomeOverview extends StatelessWidget {
     required this.deadlines,
     required this.deadlineCollapsed,
     required this.examCollapsed,
+    required this.yuketangCollapsed,
     required this.deadlineTagFilters,
     required this.onToggleDeadlineCollapsed,
     required this.onToggleExamCollapsed,
+    required this.onToggleYuketangCollapsed,
     required this.onDeadlineTagFiltersChanged,
     required this.onOpenTimetable,
     required this.onOpenDeadlines,
@@ -1133,15 +1175,18 @@ class _HomeOverview extends StatelessWidget {
     required this.onDeleteDeadline,
     required this.onDeleteSelectedDeadlines,
     required this.onToggleDeadline,
+    required this.onAddToSchedule,
   });
 
   final TimetableStore store;
   final List<Deadline> deadlines;
   final bool deadlineCollapsed;
   final bool examCollapsed;
+  final bool yuketangCollapsed;
   final Set<String> deadlineTagFilters;
   final VoidCallback onToggleDeadlineCollapsed;
   final VoidCallback onToggleExamCollapsed;
+  final VoidCallback onToggleYuketangCollapsed;
   final ValueChanged<Set<String>> onDeadlineTagFiltersChanged;
   final VoidCallback onOpenTimetable;
   final VoidCallback onOpenDeadlines;
@@ -1158,6 +1203,7 @@ class _HomeOverview extends StatelessWidget {
   final ValueChanged<Deadline> onDeleteDeadline;
   final ValueChanged<List<Deadline>> onDeleteSelectedDeadlines;
   final ValueChanged<Deadline> onToggleDeadline;
+  final ValueChanged<List<Deadline>> onAddToSchedule;
 
   @override
   Widget build(BuildContext context) {
@@ -1267,7 +1313,10 @@ class _HomeOverview extends StatelessWidget {
           coursewares: yuketangCoursewares,
           fetchedAt: yuketangSnapshot!.fetchedAt,
           now: now,
+          collapsed: yuketangCollapsed,
+          onToggleCollapsed: onToggleYuketangCollapsed,
           onOpen: () => onOpenSync(SyncTarget.yuketang),
+          onAddToSchedule: onAddToSchedule,
         ),
       ],
     ];
@@ -1298,6 +1347,7 @@ class _HomeOverview extends StatelessWidget {
         onAddExam: onAddExam,
         onEditExam: onEditExam,
         onDeleteExam: onDeleteExam,
+        onAddToSchedule: onAddToSchedule,
       ),
     ];
 
@@ -2267,7 +2317,7 @@ class _HomeDeadlineRow extends StatelessWidget {
   }
 }
 
-class _HomeExamPreview extends StatelessWidget {
+class _HomeExamPreview extends StatefulWidget {
   const _HomeExamPreview({
     required this.exams,
     required this.totalCount,
@@ -2278,6 +2328,7 @@ class _HomeExamPreview extends StatelessWidget {
     required this.onAddExam,
     required this.onEditExam,
     required this.onDeleteExam,
+    required this.onAddToSchedule,
   });
 
   final List<JiaowuExam> exams;
@@ -2289,52 +2340,121 @@ class _HomeExamPreview extends StatelessWidget {
   final VoidCallback onAddExam;
   final ValueChanged<JiaowuExam> onEditExam;
   final ValueChanged<JiaowuExam> onDeleteExam;
+  final ValueChanged<List<Deadline>> onAddToSchedule;
+
+  @override
+  State<_HomeExamPreview> createState() => _HomeExamPreviewState();
+}
+
+class _HomeExamPreviewState extends State<_HomeExamPreview> {
+  bool _selecting = false;
+  final Set<String> _selectedIds = {};
+
+  void _startSelecting() {
+    setState(() {
+      _selecting = true;
+      _selectedIds.clear();
+    });
+  }
+
+  void _cancelSelecting() {
+    setState(() {
+      _selecting = false;
+      _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelected(String externalId) {
+    setState(() {
+      if (!_selectedIds.remove(externalId)) _selectedIds.add(externalId);
+    });
+  }
+
+  void _addSelectedToSchedule() {
+    final selected = [
+      for (final exam in widget.exams)
+        if (_selectedIds.contains(exam.externalId)) exam,
+    ];
+    if (selected.isEmpty) return;
+    final now = DateTime.now();
+    widget.onAddToSchedule([
+      for (final exam in selected) deadlineFromExam(exam, now: now),
+    ]);
+    _cancelSelecting();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cardColor = theme.cardTheme.color ?? theme.colorScheme.surface;
-    final visible = exams.take(3).toList();
+    final exams = widget.exams;
+    final collapsed = widget.collapsed;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
             Text('考试安排', style: theme.textTheme.titleMedium),
-            if (collapsed) ...[
+            if (collapsed || _selecting) ...[
               const SizedBox(width: 6),
               Text(
-                '$totalCount',
+                _selecting
+                    ? '已选 ${_selectedIds.length}'
+                    : '${widget.totalCount}',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
             ],
             const Spacer(),
-            IconButton(
-              tooltip: '添加考试',
-              onPressed: onAddExam,
-              icon: const Icon(Icons.add, size: 20),
-            ),
-            IconButton(
-              tooltip: '查看全部考试',
-              onPressed: onOpenAll,
-              icon: const Icon(Icons.visibility_outlined, size: 20),
-            ),
-            IconButton(
-              tooltip: collapsed ? '展开考试安排' : '收起考试安排',
-              onPressed: onToggleCollapsed,
-              icon: RotatedBox(
-                quarterTurns: collapsed ? 3 : 0,
-                child: const Icon(Icons.expand_more, size: 20),
+            if (_selecting) ...[
+              IconButton(
+                tooltip: '添加到日程',
+                onPressed: _selectedIds.isEmpty
+                    ? null
+                    : _addSelectedToSchedule,
+                icon: const Icon(Icons.event_available, size: 20),
               ),
-            ),
+              IconButton(
+                tooltip: '取消选择',
+                onPressed: _cancelSelecting,
+                icon: const Icon(Icons.close, size: 20),
+              ),
+            ] else ...[
+              IconButton(
+                tooltip: '添加考试',
+                onPressed: widget.onAddExam,
+                icon: const Icon(Icons.add, size: 20),
+              ),
+              IconButton(
+                tooltip: '查看全部考试',
+                onPressed: widget.onOpenAll,
+                icon: const Icon(Icons.visibility_outlined, size: 20),
+              ),
+              if (!collapsed)
+                IconButton(
+                  tooltip: '批量选择',
+                  onPressed: _startSelecting,
+                  icon: const Icon(Icons.check_circle_outline, size: 20),
+                ),
+              IconButton(
+                tooltip: collapsed ? '展开考试安排' : '收起考试安排',
+                onPressed: () {
+                  if (_selecting) _cancelSelecting();
+                  widget.onToggleCollapsed();
+                },
+                icon: RotatedBox(
+                  quarterTurns: collapsed ? 3 : 0,
+                  child: const Icon(Icons.expand_more, size: 20),
+                ),
+              ),
+            ],
           ],
         ),
         if (!collapsed) ...[
           const SizedBox(height: AppSpacing.xs),
           Card(
-            child: visible.isEmpty
+            child: exams.isEmpty
                 ? Padding(
                     padding: const EdgeInsets.fromLTRB(
                       AppSpacing.lg,
@@ -2363,35 +2483,50 @@ class _HomeExamPreview extends StatelessWidget {
                   )
                 : Column(
                     children: [
-                      for (var index = 0; index < visible.length; index++) ...[
-                        SwipeActionRow(
-                          backgroundColor: cardColor,
-                          actions: [
-                            SwipeAction(
-                              label: '编辑',
-                              icon: Icons.edit_outlined,
-                              backgroundColor:
-                                  theme.colorScheme.primaryContainer,
-                              foregroundColor:
-                                  theme.colorScheme.onPrimaryContainer,
-                              onPressed: () => onEditExam(visible[index]),
+                      for (var index = 0; index < exams.length; index++) ...[
+                        if (_selecting)
+                          _HomeExamRow(
+                            exam: exams[index],
+                            now: widget.now,
+                            selecting: true,
+                            selected: _selectedIds.contains(
+                              exams[index].externalId,
                             ),
-                            SwipeAction(
-                              label: '删除',
-                              icon: Icons.delete_outline,
-                              backgroundColor: theme.colorScheme.errorContainer,
-                              foregroundColor:
-                                  theme.colorScheme.onErrorContainer,
-                              onPressed: () => onDeleteExam(visible[index]),
+                            onTap: () =>
+                                _toggleSelected(exams[index].externalId),
+                          )
+                        else
+                          SwipeActionRow(
+                            backgroundColor: cardColor,
+                            actions: [
+                              SwipeAction(
+                                label: '编辑',
+                                icon: Icons.edit_outlined,
+                                backgroundColor:
+                                    theme.colorScheme.primaryContainer,
+                                foregroundColor:
+                                    theme.colorScheme.onPrimaryContainer,
+                                onPressed: () =>
+                                    widget.onEditExam(exams[index]),
+                              ),
+                              SwipeAction(
+                                label: '删除',
+                                icon: Icons.delete_outline,
+                                backgroundColor:
+                                    theme.colorScheme.errorContainer,
+                                foregroundColor:
+                                    theme.colorScheme.onErrorContainer,
+                                onPressed: () =>
+                                    widget.onDeleteExam(exams[index]),
+                              ),
+                            ],
+                            child: _HomeExamRow(
+                              exam: exams[index],
+                              now: widget.now,
+                              onTap: () => widget.onEditExam(exams[index]),
                             ),
-                          ],
-                          child: _HomeExamRow(
-                            exam: visible[index],
-                            now: now,
-                            onTap: () => onEditExam(visible[index]),
                           ),
-                        ),
-                        if (index < visible.length - 1)
+                        if (index < exams.length - 1)
                           Divider(
                             height: 1,
                             indent: 16,
@@ -2412,11 +2547,15 @@ class _HomeExamRow extends StatelessWidget {
     required this.exam,
     required this.now,
     required this.onTap,
+    this.selecting = false,
+    this.selected = false,
   });
 
   final JiaowuExam exam;
   final DateTime now;
   final VoidCallback onTap;
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -2436,13 +2575,20 @@ class _HomeExamRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
-          vertical: AppSpacing.md,
+        padding: EdgeInsets.fromLTRB(
+          selecting ? AppSpacing.xs : AppSpacing.lg,
+          AppSpacing.md,
+          AppSpacing.lg,
+          AppSpacing.md,
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (selecting)
+              Checkbox(
+                value: selected,
+                onChanged: (_) => onTap(),
+              ),
             SizedBox(
               width: 50,
               child: Column(
@@ -2517,8 +2663,8 @@ class _HomeExamRow extends StatelessWidget {
   }
 }
 
-/// 首页的雨课堂活跃卡：正在上课 + 最近的未截止作业。
-class _HomeYuketangPreview extends StatelessWidget {
+/// 首页的雨课堂活跃卡：正在上课 + 未截止作业、实验、课件。
+class _HomeYuketangPreview extends StatefulWidget {
   const _HomeYuketangPreview({
     required this.liveLessons,
     required this.homeworks,
@@ -2526,7 +2672,10 @@ class _HomeYuketangPreview extends StatelessWidget {
     required this.coursewares,
     required this.fetchedAt,
     required this.now,
+    required this.collapsed,
+    required this.onToggleCollapsed,
     required this.onOpen,
+    required this.onAddToSchedule,
   });
 
   final List<YuketangLiveLesson> liveLessons;
@@ -2535,22 +2684,107 @@ class _HomeYuketangPreview extends StatelessWidget {
   final List<YuketangCourseware> coursewares;
   final DateTime fetchedAt;
   final DateTime now;
+  final bool collapsed;
+  final VoidCallback onToggleCollapsed;
   final VoidCallback onOpen;
+  final ValueChanged<List<Deadline>> onAddToSchedule;
+
+  @override
+  State<_HomeYuketangPreview> createState() => _HomeYuketangPreviewState();
+}
+
+class _HomeYuketangPreviewState extends State<_HomeYuketangPreview> {
+  bool _selecting = false;
+  final Set<String> _selectedIds = {};
+
+  int get _totalCount =>
+      widget.liveLessons.length +
+      widget.homeworks.length +
+      widget.experiments.length +
+      widget.coursewares.length;
+
+  List<Deadline> _candidates(DateTime now) => [
+    for (final lesson in widget.liveLessons)
+      deadlineFromLiveLesson(lesson, now: now),
+    for (final homework in widget.homeworks)
+      deadlineFromHomework(homework, now: now),
+    for (final experiment in widget.experiments)
+      deadlineFromExperiment(experiment, now: now),
+    for (final courseware in widget.coursewares)
+      deadlineFromCourseware(courseware, now: now),
+  ];
+
+  void _startSelecting() {
+    setState(() {
+      _selecting = true;
+      _selectedIds.clear();
+    });
+  }
+
+  void _cancelSelecting() {
+    setState(() {
+      _selecting = false;
+      _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelected(String id) {
+    setState(() {
+      if (!_selectedIds.remove(id)) _selectedIds.add(id);
+    });
+  }
+
+  void _toggleSelectAll() {
+    final ids = [for (final item in _candidates(DateTime.now())) item.id];
+    setState(() {
+      if (_selectedIds.length == ids.length) {
+        _selectedIds.clear();
+      } else {
+        _selectedIds
+          ..clear()
+          ..addAll(ids);
+      }
+    });
+  }
+
+  void _addSelectedToSchedule() {
+    final now = DateTime.now();
+    final selected = [
+      for (final item in _candidates(now))
+        if (_selectedIds.contains(item.id)) item,
+    ];
+    if (selected.isEmpty) return;
+    widget.onAddToSchedule(selected);
+    _cancelSelecting();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final visibleHomeworks = homeworks.take(3).toList();
-    final visibleExperiments = experiments.take(2).toList();
-    final visibleCoursewares = coursewares.take(2).toList();
-    final hiddenCount =
-        homeworks.length -
-        visibleHomeworks.length +
-        experiments.length -
-        visibleExperiments.length +
-        coursewares.length -
-        visibleCoursewares.length;
-    final stale = now.difference(fetchedAt) > const Duration(hours: 1);
+    final liveLessons = widget.liveLessons;
+    final homeworks = widget.homeworks;
+    final experiments = widget.experiments;
+    final coursewares = widget.coursewares;
+    final now = widget.now;
+    final stale =
+        now.difference(widget.fetchedAt) > const Duration(hours: 1);
+    final candidates = _candidates(now);
+    final liveIds = [
+      for (final lesson in liveLessons)
+        deadlineFromLiveLesson(lesson, now: now).id,
+    ];
+    final homeworkIds = [
+      for (final homework in homeworks)
+        deadlineFromHomework(homework, now: now).id,
+    ];
+    final experimentIds = [
+      for (final experiment in experiments)
+        deadlineFromExperiment(experiment, now: now).id,
+    ];
+    final coursewareIds = [
+      for (final courseware in coursewares)
+        deadlineFromCourseware(courseware, now: now).id,
+    ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2558,123 +2792,178 @@ class _HomeYuketangPreview extends StatelessWidget {
         Row(
           children: [
             Text('雨课堂', style: theme.textTheme.titleMedium),
+            if (widget.collapsed || _selecting) ...[
+              const SizedBox(width: 6),
+              Text(
+                _selecting ? '已选 ${_selectedIds.length}' : '$_totalCount',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
             const Spacer(),
-            IconButton(
-              tooltip: '查看雨课堂',
-              onPressed: onOpen,
-              icon: const Icon(Icons.visibility_outlined, size: 20),
-            ),
+            if (_selecting) ...[
+              IconButton(
+                tooltip: _selectedIds.length == candidates.length
+                    ? '取消全选'
+                    : '全选',
+                onPressed: candidates.isEmpty ? null : _toggleSelectAll,
+                icon: const Icon(Icons.select_all, size: 20),
+              ),
+              IconButton(
+                tooltip: '添加到日程',
+                onPressed: _selectedIds.isEmpty
+                    ? null
+                    : _addSelectedToSchedule,
+                icon: const Icon(Icons.event_available, size: 20),
+              ),
+              IconButton(
+                tooltip: '取消选择',
+                onPressed: _cancelSelecting,
+                icon: const Icon(Icons.close, size: 20),
+              ),
+            ] else ...[
+              IconButton(
+                tooltip: '查看雨课堂',
+                onPressed: widget.onOpen,
+                icon: const Icon(Icons.visibility_outlined, size: 20),
+              ),
+              if (!widget.collapsed)
+                IconButton(
+                  tooltip: '批量选择',
+                  onPressed: _startSelecting,
+                  icon: const Icon(Icons.check_circle_outline, size: 20),
+                ),
+              IconButton(
+                tooltip: widget.collapsed ? '展开雨课堂' : '收起雨课堂',
+                onPressed: () {
+                  if (_selecting) _cancelSelecting();
+                  widget.onToggleCollapsed();
+                },
+                icon: RotatedBox(
+                  quarterTurns: widget.collapsed ? 3 : 0,
+                  child: const Icon(Icons.expand_more, size: 20),
+                ),
+              ),
+            ],
           ],
         ),
-        const SizedBox(height: AppSpacing.xs),
-        Card(
-          child: Column(
-            children: [
-              for (var index = 0; index < liveLessons.length; index++) ...[
-                if (index > 0)
-                  Divider(
-                    height: 1,
-                    indent: 16,
-                    color: theme.colorScheme.outlineVariant,
+        if (!widget.collapsed) ...[
+          const SizedBox(height: AppSpacing.xs),
+          Card(
+            child: Column(
+              children: [
+                for (var index = 0; index < liveLessons.length; index++) ...[
+                  if (index > 0)
+                    Divider(
+                      height: 1,
+                      indent: 16,
+                      color: theme.colorScheme.outlineVariant,
+                    ),
+                  _HomeYuketangLiveRow(
+                    lesson: liveLessons[index],
+                    selecting: _selecting,
+                    selected: _selectedIds.contains(liveIds[index]),
+                    onTap: _selecting
+                        ? () => _toggleSelected(liveIds[index])
+                        : widget.onOpen,
                   ),
-                _HomeYuketangLiveRow(
-                  lesson: liveLessons[index],
-                  onTap: onOpen,
-                ),
-              ],
-              for (var index = 0; index < visibleHomeworks.length; index++) ...[
-                if (index > 0 || liveLessons.isNotEmpty)
-                  Divider(
-                    height: 1,
-                    indent: 16,
-                    color: theme.colorScheme.outlineVariant,
+                ],
+                for (var index = 0; index < homeworks.length; index++) ...[
+                  if (index > 0 || liveLessons.isNotEmpty)
+                    Divider(
+                      height: 1,
+                      indent: 16,
+                      color: theme.colorScheme.outlineVariant,
+                    ),
+                  _HomeYuketangHomeworkRow(
+                    homework: homeworks[index],
+                    now: now,
+                    selecting: _selecting,
+                    selected: _selectedIds.contains(homeworkIds[index]),
+                    onTap: _selecting
+                        ? () => _toggleSelected(homeworkIds[index])
+                        : widget.onOpen,
                   ),
-                _HomeYuketangHomeworkRow(
-                  homework: visibleHomeworks[index],
-                  now: now,
-                  onTap: onOpen,
-                ),
-              ],
-              for (var index = 0; index < visibleExperiments.length; index++) ...[
-                if (index > 0 ||
-                    liveLessons.isNotEmpty ||
-                    visibleHomeworks.isNotEmpty)
-                  Divider(
-                    height: 1,
-                    indent: 16,
-                    color: theme.colorScheme.outlineVariant,
+                ],
+                for (var index = 0; index < experiments.length; index++) ...[
+                  if (index > 0 ||
+                      liveLessons.isNotEmpty ||
+                      homeworks.isNotEmpty)
+                    Divider(
+                      height: 1,
+                      indent: 16,
+                      color: theme.colorScheme.outlineVariant,
+                    ),
+                  _HomeYuketangExperimentRow(
+                    experiment: experiments[index],
+                    now: now,
+                    selecting: _selecting,
+                    selected: _selectedIds.contains(experimentIds[index]),
+                    onTap: _selecting
+                        ? () => _toggleSelected(experimentIds[index])
+                        : widget.onOpen,
                   ),
-                _HomeYuketangExperimentRow(
-                  experiment: visibleExperiments[index],
-                  now: now,
-                  onTap: onOpen,
-                ),
-              ],
-              for (var index = 0; index < visibleCoursewares.length; index++) ...[
-                if (index > 0 ||
-                    liveLessons.isNotEmpty ||
-                    visibleHomeworks.isNotEmpty ||
-                    visibleExperiments.isNotEmpty)
-                  Divider(
-                    height: 1,
-                    indent: 16,
-                    color: theme.colorScheme.outlineVariant,
+                ],
+                for (var index = 0; index < coursewares.length; index++) ...[
+                  if (index > 0 ||
+                      liveLessons.isNotEmpty ||
+                      homeworks.isNotEmpty ||
+                      experiments.isNotEmpty)
+                    Divider(
+                      height: 1,
+                      indent: 16,
+                      color: theme.colorScheme.outlineVariant,
+                    ),
+                  _HomeYuketangCoursewareRow(
+                    courseware: coursewares[index],
+                    now: now,
+                    selecting: _selecting,
+                    selected: _selectedIds.contains(coursewareIds[index]),
+                    onTap: _selecting
+                        ? () => _toggleSelected(coursewareIds[index])
+                        : widget.onOpen,
                   ),
-                _HomeYuketangCoursewareRow(
-                  courseware: visibleCoursewares[index],
-                  now: now,
-                  onTap: onOpen,
-                ),
-              ],
-              if (hiddenCount > 0)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.lg,
-                    0,
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                  ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '另有 $hiddenCount 项未截止任务',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
+                ],
+                if (stale)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.lg,
+                      0,
+                      AppSpacing.lg,
+                      AppSpacing.md,
+                    ),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '更新于 ${formatDateTime(widget.fetchedAt)}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              if (stale)
-                Padding(
-                  padding: EdgeInsets.fromLTRB(
-                    AppSpacing.lg,
-                    0,
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                  ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '更新于 ${formatDateTime(fetchedAt)}',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
+              ],
+            ),
           ),
-        ),
+        ],
       ],
     );
   }
 }
 
 class _HomeYuketangLiveRow extends StatelessWidget {
-  const _HomeYuketangLiveRow({required this.lesson, required this.onTap});
+  const _HomeYuketangLiveRow({
+    required this.lesson,
+    required this.onTap,
+    this.selecting = false,
+    this.selected = false,
+  });
 
   final YuketangLiveLesson lesson;
   final VoidCallback onTap;
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -2687,12 +2976,14 @@ class _HomeYuketangLiveRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
+        padding: EdgeInsets.symmetric(
+          horizontal: selecting ? AppSpacing.xs : AppSpacing.lg,
           vertical: AppSpacing.md,
         ),
         child: Row(
           children: [
+            if (selecting)
+              Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(Icons.podcasts, size: 20, color: theme.colorScheme.error),
             const SizedBox(width: AppSpacing.md),
             Expanded(
@@ -2737,11 +3028,15 @@ class _HomeYuketangHomeworkRow extends StatelessWidget {
     required this.homework,
     required this.now,
     required this.onTap,
+    this.selecting = false,
+    this.selected = false,
   });
 
   final YuketangHomework homework;
   final DateTime now;
   final VoidCallback onTap;
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -2755,12 +3050,14 @@ class _HomeYuketangHomeworkRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
+        padding: EdgeInsets.symmetric(
+          horizontal: selecting ? AppSpacing.xs : AppSpacing.lg,
           vertical: AppSpacing.md,
         ),
         child: Row(
           children: [
+            if (selecting)
+              Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(
               Icons.assignment_outlined,
               size: 20,
@@ -2803,11 +3100,15 @@ class _HomeYuketangExperimentRow extends StatelessWidget {
     required this.experiment,
     required this.now,
     required this.onTap,
+    this.selecting = false,
+    this.selected = false,
   });
 
   final YuketangExperiment experiment;
   final DateTime now;
   final VoidCallback onTap;
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -2821,12 +3122,14 @@ class _HomeYuketangExperimentRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
+        padding: EdgeInsets.symmetric(
+          horizontal: selecting ? AppSpacing.xs : AppSpacing.lg,
           vertical: AppSpacing.md,
         ),
         child: Row(
           children: [
+            if (selecting)
+              Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(
               Icons.science_outlined,
               size: 20,
@@ -2869,11 +3172,15 @@ class _HomeYuketangCoursewareRow extends StatelessWidget {
     required this.courseware,
     required this.now,
     required this.onTap,
+    this.selecting = false,
+    this.selected = false,
   });
 
   final YuketangCourseware courseware;
   final DateTime now;
   final VoidCallback onTap;
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -2890,12 +3197,14 @@ class _HomeYuketangCoursewareRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
+        padding: EdgeInsets.symmetric(
+          horizontal: selecting ? AppSpacing.xs : AppSpacing.lg,
           vertical: AppSpacing.md,
         ),
         child: Row(
           children: [
+            if (selecting)
+              Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(
               Icons.description_outlined,
               size: 20,

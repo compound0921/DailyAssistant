@@ -54,7 +54,7 @@ Android 模拟器用 `start_android.bat`。Windows 直接运行 `start_windows.b
 ## 硬性规则
 
 - 界面中文；用户可见文案统一叫“日程”，不要再出现“Deadline”。
-- 教务考试只进“考试安排”，不写入日程。旧 `DeadlineSource.jiaowu` 只用于启动清理。
+- 教务考试只进“考试安排”，同步不自动写入日程；用户在首页手动多选后可添加到日程。旧 `DeadlineSource.jiaowu` 只用于启动清理。
 - 学习通与正方教务均只读同步，不替用户提交、签到或答题。
 - 本地优先：无后端、无账号体系、无推送、无后台定时同步。
 - 账号、密码、Cookie 只进 `flutter_secure_storage`，不得写日志或提交。

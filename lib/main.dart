@@ -22,6 +22,8 @@ Future<void> main() async {
   final deadlineCollapsed = await settingsRepository
       .loadHomeDeadlineCollapsed();
   final examCollapsed = await settingsRepository.loadHomeExamCollapsed();
+  final yuketangCollapsed = await settingsRepository
+      .loadHomeYuketangCollapsed();
 
   runApp(
     DailyAssistantApp(
@@ -34,6 +36,7 @@ Future<void> main() async {
       initialThemeMode: themeMode,
       initialDeadlineCollapsed: deadlineCollapsed,
       initialExamCollapsed: examCollapsed,
+      initialYuketangCollapsed: yuketangCollapsed,
     ),
   );
 }

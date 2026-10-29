@@ -24,6 +24,7 @@ class DailyAssistantApp extends StatefulWidget {
     this.initialThemeMode = ThemeMode.light,
     this.initialDeadlineCollapsed = false,
     this.initialExamCollapsed = false,
+    this.initialYuketangCollapsed = false,
   });
 
   final TimetableRepository repository;
@@ -35,6 +36,7 @@ class DailyAssistantApp extends StatefulWidget {
   final ThemeMode initialThemeMode;
   final bool initialDeadlineCollapsed;
   final bool initialExamCollapsed;
+  final bool initialYuketangCollapsed;
 
   @override
   State<DailyAssistantApp> createState() => _DailyAssistantAppState();
@@ -93,6 +95,7 @@ class _DailyAssistantAppState extends State<DailyAssistantApp> {
         initialDeadlines: widget.initialDeadlines,
         initialDeadlineCollapsed: widget.initialDeadlineCollapsed,
         initialExamCollapsed: widget.initialExamCollapsed,
+        initialYuketangCollapsed: widget.initialYuketangCollapsed,
         appearance: _appearance,
         onAppearanceChanged: _changeAppearance,
         themeMode: _themeMode,

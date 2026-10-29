@@ -11,6 +11,7 @@ class SettingsRepository {
   static const String appearanceKey = 'timetable_appearance_v1';
   static const String homeDeadlineCollapsedKey = 'home_deadline_collapsed_v1';
   static const String homeExamCollapsedKey = 'home_exam_collapsed_v1';
+  static const String homeYuketangCollapsedKey = 'home_yuketang_collapsed_v1';
   static const String deadlinePinEnabledKey = 'deadline_pin_enabled_v1';
   static const String deadlineReminderEnabledKey =
       'deadline_reminder_enabled_v1';
@@ -69,6 +70,16 @@ class SettingsRepository {
   Future<void> saveHomeExamCollapsed(bool collapsed) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setBool(homeExamCollapsedKey, collapsed);
+  }
+
+  Future<bool> loadHomeYuketangCollapsed() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(homeYuketangCollapsedKey) ?? false;
+  }
+
+  Future<void> saveHomeYuketangCollapsed(bool collapsed) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(homeYuketangCollapsedKey, collapsed);
   }
 
   /// 通知栏日程常驻；默认开启。

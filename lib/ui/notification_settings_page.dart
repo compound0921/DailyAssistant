@@ -20,6 +20,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
   bool _loading = true;
   bool _pinEnabled = true;
   bool _reminderEnabled = true;
+  bool _lockScreenEnabled = true;
   int _horizonMinutes = 24 * 60;
   int _scaleMinutes = 24 * 60;
 
@@ -32,12 +33,14 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
   Future<void> _load() async {
     final pin = await _repository.loadDeadlinePinEnabled();
     final reminder = await _repository.loadDeadlineReminderEnabled();
+    final lockScreen = await _repository.loadDeadlinePinLockScreenEnabled();
     final horizon = await _repository.loadDeadlinePinHorizonMinutes();
     final scale = await _repository.loadDeadlinePinScaleMinutes();
     if (!mounted) return;
     setState(() {
       _pinEnabled = pin;
       _reminderEnabled = reminder;
+      _lockScreenEnabled = lockScreen;
       _horizonMinutes = horizon;
       _scaleMinutes = scale;
       _loading = false;
@@ -47,6 +50,12 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
   Future<void> _savePin(bool enabled) async {
     setState(() => _pinEnabled = enabled);
     await _repository.saveDeadlinePinEnabled(enabled);
+    await widget.onChanged();
+  }
+
+  Future<void> _saveLockScreen(bool enabled) async {
+    setState(() => _lockScreenEnabled = enabled);
+    await _repository.saveDeadlinePinLockScreenEnabled(enabled);
     await widget.onChanged();
   }
 
@@ -133,6 +142,16 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
                           subtitle: const Text('在通知栏显示待完成日程与倒计时'),
                           value: _pinEnabled,
                           onChanged: _savePin,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Card(
+                        child: SwitchListTile(
+                          secondary: const Icon(Icons.lock_outline),
+                          title: const Text('锁屏显示'),
+                          subtitle: const Text('锁屏时也显示待完成日程'),
+                          value: _lockScreenEnabled,
+                          onChanged: _pinEnabled ? _saveLockScreen : null,
                         ),
                       ),
                       const SizedBox(height: 12),

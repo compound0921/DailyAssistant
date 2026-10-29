@@ -1,19 +1,23 @@
 package com.dailyassistant.daily_assistant
 
 import android.app.AlarmManager
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -36,11 +40,34 @@ class DeadlinePinService : Service() {
         }
     }
 
+    /**
+     * vivo/OriginOS 的锁屏不展示前台服务通知，也不会展示锁屏前就存在的通知。
+     * 锁屏期间另发一条普通通知作为锁屏副本，解锁后移除，避免通知栏重复。
+     */
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF ||
+                intent?.action == Intent.ACTION_USER_PRESENT
+            ) {
+                currentContent()?.let { updateLockScreenCopy(it) }
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        ContextCompat.registerReceiver(
+            this,
+            screenReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_USER_PRESENT)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -54,6 +81,7 @@ class DeadlinePinService : Service() {
         }
         postCards(content)
         startForegroundCompat(buildNotification(content))
+        updateLockScreenCopy(content)
         handler.removeCallbacks(tick)
         handler.postDelayed(tick, REFRESH_INTERVAL_MS)
         scheduleWatchdog(this)
@@ -64,6 +92,7 @@ class DeadlinePinService : Service() {
         handler.removeCallbacks(tick)
         cancelWatchdog(this)
         clearCards()
+        unregisterReceiver(screenReceiver)
         removeForeground()
         super.onDestroy()
     }
@@ -77,7 +106,44 @@ class DeadlinePinService : Service() {
         postCards(content)
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(content))
+        updateLockScreenCopy(content)
         return true
+    }
+
+    /**
+     * 锁屏时发布锁屏副本，解锁后移除；副本只用于绕开系统对前台服务通知的过滤。
+     * 副本必须是非前台服务的普通、非常驻通知，否则同样会被锁屏过滤。
+     */
+    private fun updateLockScreenCopy(content: PinContent) {
+        if (!needsLockScreenCopy) return
+        val manager = getSystemService(NotificationManager::class.java)
+        val enabled = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+            .getBoolean(LOCK_SCREEN_ENABLED_KEY, true)
+        val locked = enabled &&
+            getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
+        if (locked) {
+            // 每条副本用独立分组，避免被系统合并成一张卡片后只显示其中一条。
+            // 先发卡片、后发汇总：锁屏按到达时间排序，最近一条排在最上面。
+            content.cards.forEachIndexed { index, card ->
+                if (index < MAX_CARDS) {
+                    manager.notify(
+                        LOCK_SCREEN_CARD_ID_BASE + index,
+                        buildCard(card, ongoing = false, group = "$GROUP_KEY.lock.$index"),
+                    )
+                }
+            }
+            manager.notify(
+                LOCK_SCREEN_ID,
+                buildNotification(content, ongoing = false, group = "$GROUP_KEY.lock"),
+            )
+        } else {
+            manager.cancel(LOCK_SCREEN_ID)
+        }
+        // 清掉多余的旧副本；解锁时把卡片副本全部移除。
+        val keep = if (locked) content.cards.size else 0
+        for (index in keep until MAX_CARDS) {
+            manager.cancel(LOCK_SCREEN_CARD_ID_BASE + index)
+        }
     }
 
     private fun currentContent(): PinContent? {
@@ -147,21 +213,24 @@ class DeadlinePinService : Service() {
         return ((remainingMinutes * 100) / scale).toInt().coerceIn(0, 100)
     }
 
-    private fun buildNotification(content: PinContent): Notification {
+    private fun buildNotification(
+        content: PinContent,
+        ongoing: Boolean = true,
+        group: String? = null,
+    ): Notification {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_deadline)
             .setContentTitle(content.title)
             .setContentText(content.body)
-            .setOngoing(true)
+            .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
-            .setSilent(true)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(openAppIntent())
             .setProgress(100, content.progress, false)
 
+        if (group != null) builder.setGroup(group)
         // 汇总不参与分组：作为分组汇总会被部分系统隐藏，导致最近一条消失。
         return builder.build()
     }
@@ -175,25 +244,26 @@ class DeadlinePinService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
-            .setSilent(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
     }
 
-    private fun buildCard(card: PinCard): Notification {
+    private fun buildCard(
+        card: PinCard,
+        ongoing: Boolean = true,
+        group: String = GROUP_KEY,
+    ): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_deadline)
             .setContentTitle(card.title)
             .setContentText(card.body)
-            .setOngoing(true)
+            .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
-            .setSilent(true)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(openAppIntent())
             .setProgress(100, card.progress, false)
-            .setGroup(GROUP_KEY)
+            .setGroup(group)
             .build()
     }
 
@@ -233,16 +303,20 @@ class DeadlinePinService : Service() {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
+        // 旧渠道是 LOW + SILENT，锁屏副本需要默认重要度的渠道；
+        // 渠道创建后无法再由代码修改重要度与锁屏可见性，因此换用新渠道。
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
         val channel = NotificationChannel(
             CHANNEL_ID,
             "日程常驻",
-            NotificationManager.IMPORTANCE_LOW,
+            NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
             description = "在通知栏常驻显示最近一条待完成日程"
             setShowBadge(false)
             enableVibration(false)
             setSound(null, null)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
         manager.createNotificationChannel(channel)
     }
@@ -266,7 +340,12 @@ class DeadlinePinService : Service() {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
-        getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.cancel(NOTIFICATION_ID)
+        manager.cancel(LOCK_SCREEN_ID)
+        for (index in 0 until MAX_CARDS) {
+            manager.cancel(LOCK_SCREEN_CARD_ID_BASE + index)
+        }
     }
 
     private fun stopSelfAndCancel() {
@@ -282,9 +361,23 @@ class DeadlinePinService : Service() {
         private const val DEADLINES_KEY = "flutter.deadlines_v1"
         private const val HORIZON_KEY = "flutter.deadline_pin_horizon_minutes_v1"
         private const val SCALE_KEY = "flutter.deadline_pin_scale_minutes_v1"
-        private const val CHANNEL_ID = "deadline_pinned"
+        private const val LOCK_SCREEN_ENABLED_KEY = "flutter.deadline_pin_lock_screen_v1"
+        private const val CHANNEL_ID = "deadline_pinned_v4"
+        private const val LEGACY_CHANNEL_ID = "deadline_pinned"
         private const val GROUP_KEY = "deadline_pin_group"
         private const val NOTIFICATION_ID = 47001
+
+        /** 锁屏汇总副本的通知 ID；比卡片副本大，最近一条排在最上面。 */
+        private const val LOCK_SCREEN_ID = 46999
+
+        /** 锁屏副本里其它日程卡片的 ID 起始值。 */
+        private const val LOCK_SCREEN_CARD_ID_BASE = 46990
+
+        /** 只有 vivo 系系统会过滤前台服务通知，其他系统照常直接显示常驻通知。 */
+        private val needsLockScreenCopy: Boolean
+            get() = Build.MANUFACTURER.equals("vivo", ignoreCase = true) ||
+                Build.BRAND.equals("vivo", ignoreCase = true) ||
+                Build.BRAND.equals("iqoo", ignoreCase = true)
         private const val CARD_ID_BASE = 47010
         private const val MAX_CARDS = 5
         private const val DEFAULT_MINUTES = 24 * 60L

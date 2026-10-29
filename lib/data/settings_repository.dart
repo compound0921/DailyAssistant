@@ -17,6 +17,7 @@ class SettingsRepository {
       'deadline_reminder_enabled_v1';
   static const String deadlinePinHorizonKey = 'deadline_pin_horizon_minutes_v1';
   static const String deadlinePinScaleKey = 'deadline_pin_scale_minutes_v1';
+  static const String deadlinePinLockScreenKey = 'deadline_pin_lock_screen_v1';
 
   Future<ThemeMode> loadThemeMode() async {
     final preferences = await SharedPreferences.getInstance();
@@ -124,5 +125,16 @@ class SettingsRepository {
   Future<void> saveDeadlinePinScaleMinutes(int minutes) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setInt(deadlinePinScaleKey, minutes);
+  }
+
+  /// 锁屏时是否额外显示日程副本；默认开启。
+  Future<bool> loadDeadlinePinLockScreenEnabled() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(deadlinePinLockScreenKey) ?? true;
+  }
+
+  Future<void> saveDeadlinePinLockScreenEnabled(bool enabled) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(deadlinePinLockScreenKey, enabled);
   }
 }

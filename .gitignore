@@ -65,6 +65,9 @@ app.*.map.json
 /*.html
 *.local.*
 
+# GitHub Actions 下载的 IPA 产物
+/dist/
+
 # 真实课表/教务样例含个人信息，不提交
 /docs/samples/*.html
 /docs/samples/*.htm

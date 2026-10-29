@@ -8,6 +8,9 @@ on:
   push:
     paths:
       - '.github/workflows/ios-unsigned.yml'
+      - 'ios/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
 
 jobs:
   build:

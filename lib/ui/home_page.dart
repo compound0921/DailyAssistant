@@ -1266,7 +1266,6 @@ class _HomeOverview extends StatelessWidget {
             for (final item in groups.incomplete)
               if (item.tags.any(deadlineTagFilters.contains)) item,
           ];
-    final nearest = filtered.take(3).toList();
     final homeExams = homeVisibleExams(exams: jiaowuExams, now: now);
     final yuketangLive = yuketangSnapshot?.liveLessonsAt(now) ?? const [];
     final yuketangHomeworks =
@@ -1322,7 +1321,7 @@ class _HomeOverview extends StatelessWidget {
     ];
     final right = <Widget>[
       _HomeDeadlinePreview(
-        items: nearest,
+        items: filtered,
         totalCount: filtered.length,
         now: now,
         collapsed: deadlineCollapsed,

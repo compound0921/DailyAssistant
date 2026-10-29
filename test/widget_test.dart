@@ -347,6 +347,33 @@ void main() {
     );
   });
 
+  testWidgets('首页日程展开显示全部条目', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final now = DateTime.now();
+    final deadlines = [
+      for (var index = 0; index < 5; index++)
+        Deadline(
+          id: 'all-$index',
+          title: '日程 $index',
+          dueAt: now.add(Duration(days: index + 1)),
+          createdAt: now,
+          updatedAt: now,
+        ),
+    ];
+
+    await tester.pumpWidget(
+      DailyAssistantApp(
+        repository: TimetableRepository(),
+        initialDeadlines: deadlines,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (var index = 0; index < 5; index++) {
+      expect(find.text('日程 $index'), findsOneWidget);
+    }
+  });
+
   testWidgets('日程完整左滑标记完成并可恢复', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final now = DateTime.now();

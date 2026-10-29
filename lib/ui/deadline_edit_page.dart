@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/deadline.dart';
-import '../models/timetable.dart';
 import 'deadline_tag.dart';
 import 'timetable_format.dart';
 
@@ -12,12 +11,10 @@ enum _DueMode { dateTime, remaining, none }
 class DeadlineEditPage extends StatefulWidget {
   const DeadlineEditPage({
     super.key,
-    required this.courses,
     this.initial,
     this.tagOptions = const [],
   });
 
-  final List<Course> courses;
   final Deadline? initial;
 
   /// 已有标签，用于快速填入。
@@ -36,7 +33,6 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
   late final TextEditingController _minutesController;
   late DateTime _dueAt;
   String? _courseName;
-  late final List<String> _courseOptions;
   late final List<String> _tagOptions;
   final Set<String> _selectedTags = {};
   _DueMode _mode = _DueMode.dateTime;
@@ -44,6 +40,8 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
 
   /// -1 = 不提醒，0 = 准时，正数 = 提前分钟数。
   int _reminderChoice = 0;
+  String? _titleError;
+  String? _durationError;
 
   static const List<(String, Duration)> _presets = [
     ('30 分钟', Duration(minutes: 30)),
@@ -80,10 +78,6 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
     final extraTags = <String>{...widget.tagOptions, ..._selectedTags}
       ..removeAll(defaultDeadlineTags);
     _tagOptions = [...defaultDeadlineTags, ...(extraTags.toList()..sort())];
-
-    final names = <String>{for (final course in widget.courses) course.name};
-    if (_courseName != null) names.add(_courseName!);
-    _courseOptions = names.toList()..sort();
   }
 
   @override
@@ -208,15 +202,11 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
   void _save() {
     final title = _titleController.text.trim();
     if (title.isEmpty) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('请填写标题')));
+      setState(() => _titleError = '请填写标题');
       return;
     }
     if (_mode == _DueMode.remaining && _remaining <= Duration.zero) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('请选择大于 0 的剩余时长')));
+      setState(() => _durationError = '请选择大于 0 的剩余时长');
       return;
     }
 
@@ -267,10 +257,14 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
                   autofocus: !_isEditing,
                   textInputAction: TextInputAction.next,
                   maxLength: 60,
-                  decoration: const InputDecoration(
+                  onChanged: (_) {
+                    if (_titleError != null) setState(() => _titleError = null);
+                  },
+                  decoration: InputDecoration(
                     labelText: '标题',
                     hintText: '例如：提交高等数学作业',
-                    border: OutlineInputBorder(),
+                    errorText: _titleError,
+                    border: const OutlineInputBorder(),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -378,35 +372,6 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  initialValue: _courseName ?? '',
-                  decoration: const InputDecoration(
-                    labelText: '关联课程（可选）',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: [
-                    const DropdownMenuItem(value: '', child: Text('不关联')),
-                    for (final name in _courseOptions)
-                      DropdownMenuItem(value: name, child: Text(name)),
-                  ],
-                  onChanged: (value) {
-                    setState(() {
-                      _courseName = value == null || value.isEmpty
-                          ? null
-                          : value;
-                    });
-                  },
-                ),
-                if (widget.courses.isEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    '导入课表后可关联课程。',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
                 const SizedBox(height: 16),
                 TextField(
                   controller: _noteController,
@@ -491,6 +456,16 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
                 color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
+            if (_durationError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  _durationError!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ),
           ],
         ),
       ),

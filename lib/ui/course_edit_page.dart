@@ -13,6 +13,7 @@ class CourseEditPage extends StatefulWidget {
 
 class _CourseEditPageState extends State<CourseEditPage> {
   late final TextEditingController _nameController;
+  String? _nameError;
   late final TextEditingController _teacherController;
   late final TextEditingController _locationController;
 
@@ -42,17 +43,12 @@ class _CourseEditPageState extends State<CourseEditPage> {
       _teacherController.text = widget.course.originalTeacher ?? '';
       _locationController.text = widget.course.originalLocation ?? '';
     });
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('已恢复导入时的信息，点击保存后应用')));
   }
 
   void _save() {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('请填写课程名称')));
+      setState(() => _nameError = '请填写课程名称');
       return;
     }
 
@@ -93,9 +89,13 @@ class _CourseEditPageState extends State<CourseEditPage> {
                   autofocus: false,
                   textInputAction: TextInputAction.next,
                   maxLength: 60,
-                  decoration: const InputDecoration(
+                  onChanged: (_) {
+                    if (_nameError != null) setState(() => _nameError = null);
+                  },
+                  decoration: InputDecoration(
                     labelText: '课程名称',
-                    border: OutlineInputBorder(),
+                    errorText: _nameError,
+                    border: const OutlineInputBorder(),
                   ),
                 ),
                 const SizedBox(height: 8),

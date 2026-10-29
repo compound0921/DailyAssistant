@@ -11,6 +11,11 @@ class SettingsRepository {
   static const String appearanceKey = 'timetable_appearance_v1';
   static const String homeDeadlineCollapsedKey = 'home_deadline_collapsed_v1';
   static const String homeExamCollapsedKey = 'home_exam_collapsed_v1';
+  static const String deadlinePinEnabledKey = 'deadline_pin_enabled_v1';
+  static const String deadlineReminderEnabledKey =
+      'deadline_reminder_enabled_v1';
+  static const String deadlinePinHorizonKey = 'deadline_pin_horizon_minutes_v1';
+  static const String deadlinePinScaleKey = 'deadline_pin_scale_minutes_v1';
 
   Future<ThemeMode> loadThemeMode() async {
     final preferences = await SharedPreferences.getInstance();
@@ -64,5 +69,49 @@ class SettingsRepository {
   Future<void> saveHomeExamCollapsed(bool collapsed) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setBool(homeExamCollapsedKey, collapsed);
+  }
+
+  /// 通知栏日程常驻；默认开启。
+  Future<bool> loadDeadlinePinEnabled() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(deadlinePinEnabledKey) ?? true;
+  }
+
+  Future<void> saveDeadlinePinEnabled(bool enabled) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(deadlinePinEnabledKey, enabled);
+  }
+
+  /// 到点提醒总开关；关闭后不再排程任何提醒。
+  Future<bool> loadDeadlineReminderEnabled() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(deadlineReminderEnabledKey) ?? true;
+  }
+
+  Future<void> saveDeadlineReminderEnabled(bool enabled) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(deadlineReminderEnabledKey, enabled);
+  }
+
+  /// 常驻通知只显示多少分钟内的日程；0 表示不限。
+  Future<int> loadDeadlinePinHorizonMinutes() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getInt(deadlinePinHorizonKey) ?? 24 * 60;
+  }
+
+  Future<void> saveDeadlinePinHorizonMinutes(int minutes) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(deadlinePinHorizonKey, minutes);
+  }
+
+  /// 进度条满格对应的剩余时长（分钟）；剩余时间越短，蓝条越短。
+  Future<int> loadDeadlinePinScaleMinutes() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getInt(deadlinePinScaleKey) ?? 24 * 60;
+  }
+
+  Future<void> saveDeadlinePinScaleMinutes(int minutes) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(deadlinePinScaleKey, minutes);
   }
 }

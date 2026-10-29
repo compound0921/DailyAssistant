@@ -28,6 +28,7 @@ class _TimetableSharePageState extends State<TimetableSharePage> {
   TimetableShareRecord? _record;
   bool _loading = true;
   bool _busy = false;
+  String? _message;
 
   @override
   void initState() {
@@ -51,9 +52,7 @@ class _TimetableSharePageState extends State<TimetableSharePage> {
 
   void _show(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+    setState(() => _message = message);
   }
 
   Future<void> _generate() async {
@@ -121,6 +120,15 @@ class _TimetableSharePageState extends State<TimetableSharePage> {
             child: ListView(
               padding: const EdgeInsets.all(AppSpacing.lg),
               children: [
+                if (_message != null) ...[
+                  Text(
+                    _message!,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                ],
                 if (_loading) ...[
                   const LinearProgressIndicator(),
                   const SizedBox(height: AppSpacing.md),

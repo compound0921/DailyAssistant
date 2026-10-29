@@ -35,6 +35,8 @@ class YuketangSessionStore {
        _preferences = preferences ?? SharedPreferences.getInstance;
 
   static const String cookiesKey = 'yuketang_cookies_v1';
+  static const String accountKey = 'yuketang_account_v1';
+  static const String passwordKey = 'yuketang_password_v1';
   static const String snapshotKey = 'yuketang_snapshot_v1';
   static const String lastCheckedKey = 'yuketang_last_checked_v1';
 
@@ -67,9 +69,25 @@ class YuketangSessionStore {
     await preferences.setString(lastCheckedKey, at.toIso8601String());
   }
 
+  /// 账号密码登录成功后保存凭据，会话失效时可静默重登。
+  Future<void> saveCredentials(String account, String password) async {
+    await _storage.write(key: accountKey, value: account);
+    await _storage.write(key: passwordKey, value: password);
+  }
+
+  Future<(String, String)?> loadCredentials() async {
+    final account = await _storage.read(key: accountKey);
+    final password = await _storage.read(key: passwordKey);
+    if (account == null || account.isEmpty) return null;
+    if (password == null || password.isEmpty) return null;
+    return (account, password);
+  }
+
   Future<void> clear() async {
     final preferences = await _preferences();
     await _storage.delete(key: cookiesKey);
+    await _storage.delete(key: accountKey);
+    await _storage.delete(key: passwordKey);
     await preferences.remove(snapshotKey);
     await preferences.remove(lastCheckedKey);
   }

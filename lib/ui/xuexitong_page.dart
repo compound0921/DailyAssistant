@@ -261,9 +261,6 @@ class _XuexitongPageState extends State<XuexitongPage> {
     if (url == null) return;
     await Clipboard.setData(ClipboardData(text: url));
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('验证链接已复制')));
   }
 
   Future<void> _commit() async {
@@ -290,9 +287,6 @@ class _XuexitongPageState extends State<XuexitongPage> {
     if (_diagnostics.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: _diagnostics.join('\n')));
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('同步诊断已复制')));
   }
 
   @override

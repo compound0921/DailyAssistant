@@ -30,9 +30,6 @@ class _TimetableAppearancePageState extends State<TimetableAppearancePage> {
 
   void _restoreDefaults() {
     setState(() => _appearance = TimetableAppearance.standard);
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('已恢复默认，点击保存后应用')));
   }
 
   @override

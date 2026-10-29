@@ -26,6 +26,7 @@ class ExamEditPage extends StatefulWidget {
 }
 
 class _ExamEditPageState extends State<ExamEditPage> {
+  String? _formError;
   bool get _isEditing => widget.exam != null;
 
   late final TextEditingController _courseNameController;
@@ -135,11 +136,11 @@ class _ExamEditPageState extends State<ExamEditPage> {
   void _save() {
     final courseName = _courseNameController.text.trim();
     if (courseName.isEmpty) {
-      _showMessage('请填写课程名称');
+      setState(() => _formError = '请填写课程名称');
       return;
     }
     if (!_endAt.isAfter(_startAt)) {
-      _showMessage('结束时间必须晚于开始时间');
+      setState(() => _formError = '结束时间必须晚于开始时间');
       return;
     }
 
@@ -192,11 +193,6 @@ class _ExamEditPageState extends State<ExamEditPage> {
     Navigator.of(context).pop(const ExamEditResult.restore());
   }
 
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -213,6 +209,16 @@ class _ExamEditPageState extends State<ExamEditPage> {
             child: ListView(
               padding: const EdgeInsets.all(AppSpacing.lg),
               children: [
+                if (_formError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    child: Text(
+                      _formError!,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ),
                 TextField(
                   controller: _courseNameController,
                   textInputAction: TextInputAction.next,

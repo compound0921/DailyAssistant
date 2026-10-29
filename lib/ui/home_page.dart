@@ -17,6 +17,7 @@ import '../models/timetable.dart';
 import '../models/timetable_appearance.dart';
 import '../models/timetable_store.dart';
 import '../notifications/deadline_notifications.dart';
+import '../notifications/deadline_pin.dart';
 import '../xuexitong/xuexitong_deadline_mapper.dart';
 import '../xuexitong/xuexitong_service.dart';
 import '../yuketang/yuketang_service.dart';
@@ -69,7 +70,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   late TimetableStore _store;
   late List<Deadline> _deadlines;
   _HomeSection _section = _HomeSection.home;
@@ -88,6 +89,8 @@ class _HomePageState extends State<HomePage> {
   bool _deadlineCollapsed = false;
   bool _examCollapsed = false;
   Set<String> _deadlineTagFilters = {};
+  bool _deadlinePinEnabled = true;
+  bool _deadlineReminderEnabled = true;
   Timer? _clockTimer;
 
   static const Duration _autoSyncInterval = Duration(minutes: 5);
@@ -95,12 +98,13 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _store = widget.initialStore;
     _deadlines = widget.initialDeadlines;
     _deadlineCollapsed = widget.initialDeadlineCollapsed;
     _examCollapsed = widget.initialExamCollapsed;
     _loadJiaowuSnapshot();
-    unawaited(_notifications.syncAll(_deadlines));
+    unawaited(_loadNotificationSettings());
     unawaited(_cleanupJiaowuDeadlines());
     _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
@@ -117,8 +121,16 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _clockTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    // 回到应用时立即重贴常驻通知，用户可能刚把它划掉。
+    unawaited(_syncDeadlinePin());
   }
 
   void _toggleDeadlineCollapsed() {
@@ -289,7 +301,7 @@ class _HomePageState extends State<HomePage> {
   Future<bool> _commitXuexitong(XuexitongMergeResult result) async {
     if (!result.hasChanges) return true;
     final saved = await _persistDeadlines(result.deadlines);
-    if (saved) _showMessage(_xuexitongSummary(result));
+    if (saved) _showMessage(_xuexitongSummary(result), sync: true);
     return saved;
   }
 
@@ -298,14 +310,14 @@ class _HomePageState extends State<HomePage> {
     bool report = false,
   }) async {
     if (_autoSyncRunning) {
-      if (report) _showMessage('正在同步，请稍候');
+      if (report) _showMessage('正在同步，请稍候', sync: true);
       return;
     }
     _autoSyncRunning = true;
     try {
       final state = await _xuexitongService.loadStoredState();
       if (!state.hasCredentials && !state.isLoggedIn) {
-        if (report) _showMessage('还没有登录学习通，请先到学习通页面登录');
+        if (report) _showMessage('还没有登录学习通，请先到学习通页面登录', sync: true);
         return;
       }
 
@@ -324,15 +336,15 @@ class _HomePageState extends State<HomePage> {
         reconciledCourseNames: result.reconciledCourseNames,
       );
       if (!merged.hasChanges) {
-        if (report) _showMessage('学习通已是最新');
+        if (report) _showMessage('学习通已是最新', sync: true);
         return;
       }
       final saved = await _persistDeadlines(merged.deadlines);
-      if (saved && report) _showMessage(_xuexitongSummary(merged));
+      if (saved && report) _showMessage(_xuexitongSummary(merged), sync: true);
     } on XuexitongException catch (error) {
-      if (report) _showMessage('学习通同步失败：${error.message}');
+      if (report) _showMessage('学习通同步失败：${error.message}', sync: true);
     } catch (error) {
-      if (report) _showMessage('学习通同步失败：$error');
+      if (report) _showMessage('学习通同步失败：$error', sync: true);
     } finally {
       _autoSyncRunning = false;
     }
@@ -358,14 +370,14 @@ class _HomePageState extends State<HomePage> {
     bool report = false,
   }) async {
     if (_autoSyncJiaowuRunning) {
-      if (report) _showMessage('正在同步教务，请稍候');
+      if (report) _showMessage('正在同步教务，请稍候', sync: true);
       return;
     }
     _autoSyncJiaowuRunning = true;
     try {
       final state = await _jiaowuService.loadStoredState();
       if (!state.hasCredentials && !state.hasSession) {
-        if (report) _showMessage('还没有登录教务，请先到同步页登录');
+        if (report) _showMessage('还没有登录教务，请先到同步页登录', sync: true);
         return;
       }
 
@@ -387,12 +399,13 @@ class _HomePageState extends State<HomePage> {
         _showMessage(
           '教务同步完成：${result.snapshot.messages.length} 条消息，'
           '${result.snapshot.exams.length} 场考试',
+          sync: true,
         );
       }
     } on JiaowuException catch (error) {
-      if (report) _showMessage('教务同步失败：${error.message}');
+      if (report) _showMessage('教务同步失败：${error.message}', sync: true);
     } catch (error) {
-      if (report) _showMessage('教务同步失败：$error');
+      if (report) _showMessage('教务同步失败：$error', sync: true);
     } finally {
       _autoSyncJiaowuRunning = false;
     }
@@ -558,7 +571,6 @@ class _HomePageState extends State<HomePage> {
     final created = await Navigator.of(context).push<Deadline>(
       MaterialPageRoute(
         builder: (_) => DeadlineEditPage(
-          courses: _active?.timetable.courses ?? const [],
           tagOptions: _deadlineTags,
         ),
       ),
@@ -577,7 +589,6 @@ class _HomePageState extends State<HomePage> {
     final updated = await Navigator.of(context).push<Deadline>(
       MaterialPageRoute(
         builder: (_) => DeadlineEditPage(
-          courses: _active?.timetable.courses ?? const [],
           initial: deadline,
           tagOptions: _deadlineTags,
         ),
@@ -684,23 +695,126 @@ class _HomePageState extends State<HomePage> {
     await _persistDeadlines(next);
   }
 
-  Future<bool> _persistDeadlines(List<Deadline> deadlines) async {
+  /// 拖动结束后按视觉顺序写入手动序号，没有参与本次拖动的条目保持不变。
+  Future<void> _reorderDeadlines(List<Deadline> ordered) async {
+    final now = DateTime.now();
+    final indexById = <String, int>{
+      for (var index = 0; index < ordered.length; index++)
+        ordered[index].id: index,
+    };
+    final next = [
+      for (final deadline in _deadlines)
+        if (indexById.containsKey(deadline.id))
+          deadline.copyWith(
+            sortIndex: indexById[deadline.id],
+            updatedAt: now,
+          )
+        else
+          deadline,
+    ];
+    await _persistDeadlines(next);
+  }
+
+  /// 删除批量选中的日程。
+  Future<void> _deleteSelectedDeadlines(List<Deadline> selected) async {
+    if (selected.isEmpty) return;
+    final ids = {for (final item in selected) item.id};
+    final next = [
+      for (final deadline in _deadlines)
+        if (!ids.contains(deadline.id)) deadline,
+    ];
+    await _persistDeadlines(next);
+  }
+
+  /// 清除所有手动顺序与置顶，回到按截止时间的默认排列。
+  Future<void> _resetDeadlineOrder() async {
+    final now = DateTime.now();
+    final next = [
+      for (final deadline in _deadlines)
+        deadline.copyWith(clearSortIndex: true, pinned: false, updatedAt: now),
+    ];
+    await _persistDeadlines(next, optimistic: true);
+  }
+
+  Future<void> _toggleDeadlinePinned(Deadline deadline) async {
+    final next = [
+      for (final item in _deadlines)
+        if (item.id == deadline.id)
+          item.copyWith(pinned: !item.pinned, updatedAt: DateTime.now())
+        else
+          item,
+    ];
+    await _persistDeadlines(next, optimistic: true);
+  }
+
+  Future<void> _loadNotificationSettings() async {
+    final pin = await _settingsRepository.loadDeadlinePinEnabled();
+    final reminder = await _settingsRepository.loadDeadlineReminderEnabled();
+    if (!mounted) return;
+    setState(() {
+      _deadlinePinEnabled = pin;
+      _deadlineReminderEnabled = reminder;
+    });
+    await _syncDeadlinePin();
+    await _syncReminders();
+  }
+
+  /// 常驻通知由原生服务读取本地数据；这里只负责启动或关闭。
+  Future<void> _syncDeadlinePin() async {
+    final now = DateTime.now();
+    final hasPending = _deadlines.any(
+      (deadline) =>
+          !deadline.completed && (deadline.dueAt?.isAfter(now) ?? false),
+    );
+    if (_deadlinePinEnabled && hasPending) {
+      await DeadlinePinNotification.start();
+    } else {
+      await DeadlinePinNotification.stop();
+    }
+  }
+
+  /// 到点提醒的总开关关闭时，取消所有已排程提醒。
+  Future<void> _syncReminders({
+    List<Deadline>? deadlines,
+    List<Deadline>? previous,
+  }) async {
+    final list = deadlines ?? _deadlines;
+    if (!_deadlineReminderEnabled) {
+      await _notifications.syncAll(
+        const [],
+        previous: previous ?? list,
+      );
+      return;
+    }
+    await _notifications.ensurePermission(list);
+    await _notifications.syncAll(list, previous: previous ?? const []);
+  }
+
+  /// [optimistic] 为 true 时先更新界面再落盘，避免拖动排序后界面先回弹再跳回。
+  Future<bool> _persistDeadlines(
+    List<Deadline> deadlines, {
+    bool optimistic = false,
+  }) async {
     final previous = _deadlines;
+    if (optimistic) setState(() => _deadlines = deadlines);
     try {
       await widget.deadlineRepository.save(deadlines);
       if (!mounted) return false;
-      setState(() => _deadlines = deadlines);
-      unawaited(_notifications.syncAll(deadlines, previous: previous));
+      if (!optimistic) setState(() => _deadlines = deadlines);
+      unawaited(_syncReminders(deadlines: deadlines, previous: previous));
+      unawaited(_syncDeadlinePin());
       return true;
     } catch (error) {
+      if (optimistic && mounted) setState(() => _deadlines = previous);
       if (!mounted) return false;
       _showMessage('保存日程失败：$error');
       return false;
     }
   }
 
-  void _showMessage(String message) {
-    if (!mounted) return;
+  /// 只有同步结果才用底部提示；其他操作不再弹黑色提示条。
+  void _showMessage(String message, {bool sync = false}) {
+    if (!mounted || !sync) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
@@ -720,21 +834,24 @@ class _HomePageState extends State<HomePage> {
       },
       child: Scaffold(
         appBar: _buildAppBar(context),
-        body: wide
-            ? Row(
-                children: [
-                  _buildRail(context),
-                  const VerticalDivider(width: 1),
-                  Expanded(child: _buildBody(context)),
-                ],
-              )
-            : _buildBody(context),
+        body: ListenableBuilder(
+          listenable: DeadlineColorSettings.instance,
+          builder: (context, _) => wide
+              ? Row(
+                  children: [
+                    _buildRail(context),
+                    const VerticalDivider(width: 1),
+                    Expanded(child: _buildBody(context)),
+                  ],
+                )
+              : _buildBody(context),
+        ),
         bottomNavigationBar: wide ? null : _buildNavigationBar(),
         floatingActionButton: _section == _HomeSection.deadlines
-            ? FloatingActionButton.extended(
+            ? FloatingActionButton(
                 onPressed: _createDeadline,
-                icon: const Icon(Icons.add),
-                label: const Text('新增日程'),
+                tooltip: '新增日程',
+                child: const Icon(Icons.add),
               )
             : null,
       ),
@@ -812,7 +929,7 @@ class _HomePageState extends State<HomePage> {
     switch (_section) {
       case _HomeSection.home:
         return AppBar(
-          title: const Text('校园助手'),
+          title: const Text('DailyAssistant'),
           actions: [_buildThemeButton()],
         );
       case _HomeSection.timetable:
@@ -914,6 +1031,7 @@ class _HomePageState extends State<HomePage> {
           onEditDeadline: _editDeadline,
           onDeleteDeadline: _deleteDeadline,
           onToggleDeadline: _toggleDeadline,
+          onDeleteSelectedDeadlines: _deleteSelectedDeadlines,
         );
       case _HomeSection.timetable:
         if (active == null || active.timetable.isEmpty) {
@@ -938,6 +1056,10 @@ class _HomePageState extends State<HomePage> {
           onToggle: _toggleDeadline,
           onClearExpired: _clearExpiredDeadlines,
           onClearCompleted: _clearCompletedDeadlines,
+          onReorder: _reorderDeadlines,
+          onTogglePin: _toggleDeadlinePinned,
+          onResetOrder: _resetDeadlineOrder,
+          onDeleteSelected: _deleteSelectedDeadlines,
         );
       case _HomeSection.sync:
         return SyncPage(
@@ -960,6 +1082,7 @@ class _HomePageState extends State<HomePage> {
           onTimetableRenamed: _renameActiveTimetable,
           themeMode: widget.themeMode,
           onThemeModeChanged: widget.onThemeModeChanged,
+          onNotificationSettingsChanged: _loadNotificationSettings,
         );
     }
   }
@@ -987,6 +1110,7 @@ class _HomeOverview extends StatelessWidget {
     required this.onDeleteExam,
     required this.onEditDeadline,
     required this.onDeleteDeadline,
+    required this.onDeleteSelectedDeadlines,
     required this.onToggleDeadline,
   });
 
@@ -1010,6 +1134,7 @@ class _HomeOverview extends StatelessWidget {
   final ValueChanged<JiaowuExam> onDeleteExam;
   final ValueChanged<Deadline> onEditDeadline;
   final ValueChanged<Deadline> onDeleteDeadline;
+  final ValueChanged<List<Deadline>> onDeleteSelectedDeadlines;
   final ValueChanged<Deadline> onToggleDeadline;
 
   @override
@@ -1114,6 +1239,7 @@ class _HomeOverview extends StatelessWidget {
         onEdit: onEditDeadline,
         onDelete: onDeleteDeadline,
         onToggle: onToggleDeadline,
+        onDeleteSelected: onDeleteSelectedDeadlines,
       ),
       const SizedBox(height: AppSpacing.md),
       _HomeExamPreview(
@@ -1388,7 +1514,7 @@ class _TodayHero extends StatelessWidget {
       child: InkWell(
         onTap: onOpenTimetable,
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1432,7 +1558,7 @@ class _TodayHero extends StatelessWidget {
                   Text(
                     formatMinutes(span.startMinute),
                     style: tabularFigures(
-                      theme.textTheme.headlineMedium,
+                      theme.textTheme.headlineSmall,
                     ).copyWith(color: theme.colorScheme.primary),
                   ),
                   Text(
@@ -1465,18 +1591,12 @@ class _TodayHero extends StatelessWidget {
                         ),
                       ),
                     ],
-                    const SizedBox(height: 6),
-                    TextButton(
-                      onPressed: onOpenTimetable,
-                      style: TextButton.styleFrom(
-                        padding: EdgeInsets.zero,
-                        minimumSize: const Size(0, 36),
-                        alignment: Alignment.centerLeft,
-                      ),
-                      child: const Text('查看课表 →'),
-                    ),
                   ],
                 ),
+              ),
+              Icon(
+                Icons.chevron_right,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ],
           ),
@@ -1602,13 +1722,17 @@ class _TodayTimelineRow extends StatelessWidget {
     ].whereType<String>().where((value) => value.trim().isNotEmpty).join(' · ');
     final primaryColor = theme.colorScheme.primary;
     final mutedColor = theme.colorScheme.onSurfaceVariant;
+    // 次要信息更浅一档，拉开与课程名的黑白对比。
+    final softMuted = theme.brightness == Brightness.light
+        ? mutedColor.withValues(alpha: 0.72)
+        : mutedColor.withValues(alpha: 0.8);
     final barColor = effective.cancelled
         ? theme.colorScheme.outlineVariant
         : effective.added || ongoing
         ? primaryColor
         : theme.colorScheme.outlineVariant;
     final titleColor = effective.cancelled || past
-        ? mutedColor
+        ? softMuted
         : theme.colorScheme.onSurface;
     final label = effective.label;
 
@@ -1625,7 +1749,7 @@ class _TodayTimelineRow extends StatelessWidget {
                 style: tabularFigures(theme.textTheme.bodySmall).copyWith(
                   color: ongoing && !effective.cancelled
                       ? primaryColor
-                      : mutedColor,
+                      : softMuted,
                   fontWeight: ongoing && !effective.cancelled
                       ? FontWeight.w700
                       : FontWeight.w500,
@@ -1707,7 +1831,7 @@ class _TodayTimelineRow extends StatelessWidget {
   }
 }
 
-class _HomeDeadlinePreview extends StatelessWidget {
+class _HomeDeadlinePreview extends StatefulWidget {
   const _HomeDeadlinePreview({
     required this.items,
     required this.totalCount,
@@ -1721,6 +1845,7 @@ class _HomeDeadlinePreview extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     required this.onToggle,
+    required this.onDeleteSelected,
   });
 
   final List<Deadline> items;
@@ -1735,11 +1860,103 @@ class _HomeDeadlinePreview extends StatelessWidget {
   final ValueChanged<Deadline> onEdit;
   final ValueChanged<Deadline> onDelete;
   final ValueChanged<Deadline> onToggle;
+  final ValueChanged<List<Deadline>> onDeleteSelected;
+
+  @override
+  State<_HomeDeadlinePreview> createState() => _HomeDeadlinePreviewState();
+}
+
+class _HomeDeadlinePreviewState extends State<_HomeDeadlinePreview> {
+  bool _selecting = false;
+  final Set<String> _selectedIds = {};
+
+  Future<void> _confirmDeleteSelected() async {
+    final selected = [
+      for (final deadline in widget.items)
+        if (_selectedIds.contains(deadline.id)) deadline,
+    ];
+    if (selected.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除日程'),
+        content: Text('将删除选中的 ${selected.length} 条日程，且无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    widget.onDeleteSelected(selected);
+    setState(() {
+      _selecting = false;
+      _selectedIds.clear();
+    });
+  }
+
+  Widget _headerActions(ThemeData theme) {
+    if (_selecting) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: '删除选中',
+            onPressed: _selectedIds.isEmpty ? null : _confirmDeleteSelected,
+            icon: const Icon(Icons.delete_outline, size: 20),
+          ),
+          IconButton(
+            tooltip: '取消选择',
+            onPressed: () => setState(() {
+              _selecting = false;
+              _selectedIds.clear();
+            }),
+            icon: const Icon(Icons.close, size: 20),
+          ),
+        ],
+      );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: '批量选择',
+          onPressed: () => setState(() {
+            _selecting = true;
+            _selectedIds.clear();
+          }),
+          icon: const Icon(Icons.check_circle_outline, size: 20),
+        ),
+        IconButton(
+          tooltip: '查看全部日程',
+          onPressed: widget.onOpenAll,
+          icon: const Icon(Icons.visibility_outlined, size: 20),
+        ),
+        IconButton(
+          tooltip: widget.collapsed ? '展开日程' : '收起日程',
+          onPressed: widget.onToggleCollapsed,
+          icon: RotatedBox(
+            quarterTurns: widget.collapsed ? 3 : 0,
+            child: const Icon(Icons.expand_more, size: 20),
+          ),
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cardColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final items = widget.items;
+    final collapsed = widget.collapsed;
+    final selectedTags = widget.selectedTags;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1749,24 +1966,26 @@ class _HomeDeadlinePreview extends StatelessWidget {
             if (collapsed) ...[
               const SizedBox(width: 6),
               Text(
-                '$totalCount',
+                '${widget.totalCount}',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
             ],
             const Spacer(),
-            if ((tags.isNotEmpty || selectedTags.isNotEmpty) && !collapsed)
+            if (!_selecting &&
+                (widget.tags.isNotEmpty || selectedTags.isNotEmpty) &&
+                !collapsed)
               MenuAnchor(
                 alignmentOffset: const Offset(-24, 8),
                 menuChildren: [
-                  for (final tag in tags)
+                  for (final tag in widget.tags)
                     MenuItemButton(
                       closeOnActivate: false,
                       onPressed: () {
                         final next = {...selectedTags};
                         if (!next.remove(tag)) next.add(tag);
-                        onTagFiltersChanged(next);
+                        widget.onTagFiltersChanged(next);
                       },
                       leadingIcon: Icon(
                         selectedTags.contains(tag)
@@ -1779,7 +1998,7 @@ class _HomeDeadlinePreview extends StatelessWidget {
                   if (selectedTags.isNotEmpty) ...[
                     const Divider(height: 1),
                     MenuItemButton(
-                      onPressed: () => onTagFiltersChanged({}),
+                      onPressed: () => widget.onTagFiltersChanged({}),
                       leadingIcon: const Icon(Icons.clear_all, size: 20),
                       child: const Text('清除筛选'),
                     ),
@@ -1805,15 +2024,7 @@ class _HomeDeadlinePreview extends StatelessWidget {
                   );
                 },
               ),
-            TextButton(onPressed: onOpenAll, child: const Text('查看全部')),
-            IconButton(
-              tooltip: collapsed ? '展开日程' : '收起日程',
-              onPressed: onToggleCollapsed,
-              icon: RotatedBox(
-                quarterTurns: collapsed ? 3 : 0,
-                child: const Icon(Icons.expand_more, size: 20),
-              ),
-            ),
+            _headerActions(theme),
           ],
         ),
         if (!collapsed) ...[
@@ -1844,7 +2055,7 @@ class _HomeDeadlinePreview extends StatelessWidget {
                           ),
                         ),
                         TextButton(
-                          onPressed: onOpenAll,
+                          onPressed: widget.onOpenAll,
                           child: const Text('去添加'),
                         ),
                       ],
@@ -1853,34 +2064,47 @@ class _HomeDeadlinePreview extends StatelessWidget {
                 : Column(
                     children: [
                       for (var index = 0; index < items.length; index++) ...[
-                        SwipeActionRow(
-                          backgroundColor: cardColor,
-                          onFullSwipe: () => onToggle(items[index]),
-                          actions: [
-                            SwipeAction(
-                              label: '编辑',
-                              icon: Icons.edit_outlined,
-                              backgroundColor:
-                                  theme.colorScheme.primaryContainer,
-                              foregroundColor:
-                                  theme.colorScheme.onPrimaryContainer,
-                              onPressed: () => onEdit(items[index]),
-                            ),
-                            SwipeAction(
-                              label: '删除',
-                              icon: Icons.delete_outline,
-                              backgroundColor: theme.colorScheme.errorContainer,
-                              foregroundColor:
-                                  theme.colorScheme.onErrorContainer,
-                              onPressed: () => onDelete(items[index]),
-                            ),
-                          ],
-                          child: _HomeDeadlineRow(
+                        if (_selecting)
+                          _HomeDeadlineRow(
                             deadline: items[index],
-                            now: now,
-                            onTap: onOpenAll,
+                            now: widget.now,
+                            selecting: true,
+                            selected: _selectedIds.contains(items[index].id),
+                            onTap: () => setState(() {
+                              final id = items[index].id;
+                              if (!_selectedIds.remove(id)) _selectedIds.add(id);
+                            }),
+                          )
+                        else
+                          SwipeActionRow(
+                            backgroundColor: cardColor,
+                            onFullSwipe: () => widget.onToggle(items[index]),
+                            actions: [
+                              SwipeAction(
+                                label: '编辑',
+                                icon: Icons.edit_outlined,
+                                backgroundColor:
+                                    theme.colorScheme.primaryContainer,
+                                foregroundColor:
+                                    theme.colorScheme.onPrimaryContainer,
+                                onPressed: () => widget.onEdit(items[index]),
+                              ),
+                              SwipeAction(
+                                label: '删除',
+                                icon: Icons.delete_outline,
+                                backgroundColor:
+                                    theme.colorScheme.errorContainer,
+                                foregroundColor:
+                                    theme.colorScheme.onErrorContainer,
+                                onPressed: () => widget.onDelete(items[index]),
+                              ),
+                            ],
+                            child: _HomeDeadlineRow(
+                              deadline: items[index],
+                              now: widget.now,
+                              onTap: widget.onOpenAll,
+                            ),
                           ),
-                        ),
                         if (index < items.length - 1)
                           Divider(
                             height: 1,
@@ -1902,11 +2126,15 @@ class _HomeDeadlineRow extends StatelessWidget {
     required this.deadline,
     required this.now,
     required this.onTap,
+    this.selecting = false,
+    this.selected = false,
   });
 
   final Deadline deadline;
   final DateTime now;
   final VoidCallback onTap;
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -1919,13 +2147,20 @@ class _HomeDeadlineRow extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
-      child: Padding(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        color: selecting && selected
+            ? theme.colorScheme.primaryContainer
+            : Colors.transparent,
         padding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.lg,
           vertical: AppSpacing.md,
         ),
         child: Row(
           children: [
+            if (selecting)
+              Checkbox(value: selected, onChanged: (_) => onTap()),
             Container(
               width: 4,
               height: 38,
@@ -2030,8 +2265,16 @@ class _HomeExamPreview extends StatelessWidget {
               ),
             ],
             const Spacer(),
-            TextButton(onPressed: onAddExam, child: const Text('添加')),
-            TextButton(onPressed: onOpenAll, child: const Text('查看全部')),
+            IconButton(
+              tooltip: '添加考试',
+              onPressed: onAddExam,
+              icon: const Icon(Icons.add, size: 20),
+            ),
+            IconButton(
+              tooltip: '查看全部考试',
+              onPressed: onOpenAll,
+              icon: const Icon(Icons.visibility_outlined, size: 20),
+            ),
             IconButton(
               tooltip: collapsed ? '展开考试安排' : '收起考试安排',
               onPressed: onToggleCollapsed,
@@ -2220,12 +2463,6 @@ class _HomeExamRow extends StatelessWidget {
                   ),
                 ],
               ),
-            ),
-            const SizedBox(width: AppSpacing.sm),
-            Icon(
-              Icons.edit_outlined,
-              size: 16,
-              color: theme.colorScheme.onSurfaceVariant,
             ),
           ],
         ),

@@ -189,22 +189,13 @@ class _UpdatePageState extends State<UpdatePage> {
 
       switch (result) {
         case InstallResult.started:
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('已打开安装程序，请按提示完成更新')));
         case InstallResult.permissionRequired:
           await _showPermissionDialog();
         case InstallResult.unsupported:
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('当前平台暂不支持应用内安装')));
       }
     } catch (error) {
       if (!mounted) return;
       setState(() => _phase = _UpdatePhase.ready);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('无法打开安装程序，请重试')));
     }
   }
 
@@ -240,9 +231,7 @@ class _UpdatePageState extends State<UpdatePage> {
   }
 
   void _showOpenFailed() {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('无法打开浏览器')));
+    // 打开安装程序的失败提示已移出底部弹窗，静默处理。
   }
 
   @override
@@ -259,7 +248,7 @@ class _UpdatePageState extends State<UpdatePage> {
                 Card(
                   child: ListTile(
                     leading: const Icon(Icons.system_update_outlined),
-                    title: const Text('校园助手'),
+                    title: const Text('DailyAssistant'),
                     subtitle: Text(
                       _currentVersion == null
                           ? '当前版本读取中…'

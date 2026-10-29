@@ -126,7 +126,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('校园助手'), findsOneWidget);
+    expect(find.text('DailyAssistant'), findsOneWidget);
     expect(find.text('课表'), findsOneWidget);
     // 首页“日程”标题和底部导航各一处。
     expect(find.text('日程'), findsNWidgets(2));
@@ -591,6 +591,8 @@ void main() {
     await openTimetable(tester);
 
     await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('课表设置'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('课表外观'));
     await tester.pumpAndSettle();

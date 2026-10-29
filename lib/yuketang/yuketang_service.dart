@@ -150,6 +150,12 @@ class YuketangService {
 
   Future<void> logout() => _store.clear();
 
+  /// 网页登录用的账号密码，保存在本机安全存储。
+  Future<(String, String)?> loadSavedCredentials() => _store.loadCredentials();
+
+  Future<void> saveCredentials(String account, String password) =>
+      _store.saveCredentials(account, password);
+
   /// 申请登录二维码。不需要登录态。
   Future<YuketangLoginTicket> requestLoginQr() async {
     try {
@@ -168,6 +174,21 @@ class YuketangService {
     } on DioException catch (error) {
       throw _networkError(error, action: '获取登录二维码');
     }
+  }
+
+
+  /// 网页登录完成后，用 WebView 里的 Cookie 建立会话。
+  Future<YuketangLoginResult> loginWithCookies(
+    Map<String, String> cookies,
+  ) async {
+    final merged = mergeYuketangCookies(const {}, cookies);
+    if (!merged.containsKey('sessionid')) {
+      throw const YuketangException(
+        '网页登录没有返回雨课堂会话，请重试',
+        kind: YuketangFailureKind.loginRequired,
+      );
+    }
+    return _completeLogin(merged);
   }
 
   /// 长轮询扫码结果。返回 null 表示二维码过期或主动取消。
@@ -235,7 +256,7 @@ class YuketangService {
     final state = await _store.load();
     if (!state.hasSession) {
       throw const YuketangException(
-        '还没有登录雨课堂，请先扫码登录',
+        '还没有登录雨课堂，请先登录',
         kind: YuketangFailureKind.loginRequired,
       );
     }
@@ -271,7 +292,7 @@ class YuketangService {
     final state = await _store.load();
     if (!state.hasSession) {
       throw const YuketangException(
-        '还没有登录雨课堂，请先扫码登录',
+        '还没有登录雨课堂，请先登录',
         kind: YuketangFailureKind.loginRequired,
       );
     }

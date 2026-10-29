@@ -2,6 +2,7 @@ package com.dailyassistant.daily_assistant
 
 import android.content.Intent
 import android.net.Uri
+import android.webkit.CookieManager
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
@@ -12,6 +13,8 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val installerChannel = "daily_assistant/installer"
+    private val deadlinePinChannel = "daily_assistant/deadline_pin"
+    private val cookieChannel = "daily_assistant/cookies"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -20,6 +23,42 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "installApk" -> installApk(call.argument<String>("path"), result)
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, cookieChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getCookie" -> {
+                        val url = call.argument<String>("url")
+                        if (url.isNullOrBlank()) {
+                            result.error("invalid_url", "URL 为空", null)
+                        } else {
+                            try {
+                                result.success(
+                                    CookieManager.getInstance().getCookie(url),
+                                )
+                            } catch (error: Exception) {
+                                result.error("cookie_failed", error.message, null)
+                            }
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, deadlinePinChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        DeadlinePinService.start(this)
+                        result.success(true)
+                    }
+                    "stop" -> {
+                        DeadlinePinService.stop(this)
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }

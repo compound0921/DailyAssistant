@@ -5,10 +5,12 @@ import 'data/deadline_repository.dart';
 import 'data/settings_repository.dart';
 import 'data/timetable_repository.dart';
 import 'notifications/deadline_notifications.dart';
+import 'ui/deadline_colors.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await DeadlineNotificationService.instance.initialize();
+  await DeadlineColorSettings.instance.load();
 
   final repository = TimetableRepository();
   final deadlineRepository = DeadlineRepository();

@@ -356,8 +356,8 @@ void main() {
         YuketangService(store: _FakeYuketangStore(const YuketangStoredState())),
       );
 
-      expect(find.text('登录雨课堂'), findsOneWidget);
-      expect(find.text('扫码登录'), findsOneWidget);
+      expect(find.text('登录雨课堂'), findsWidgets);
+      expect(find.widgetWithText(FilledButton, '登录雨课堂'), findsOneWidget);
     });
 
     testWidgets('已登录时显示用户与课程', (tester) async {
@@ -391,7 +391,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('雨课堂登录已过期，请重新扫码'), findsOneWidget);
-      expect(find.text('重新扫码登录'), findsOneWidget);
+      expect(find.text('重新登录'), findsOneWidget);
     });
 
     testWidgets('课程详情页显示课件和试卷两栏', (tester) async {

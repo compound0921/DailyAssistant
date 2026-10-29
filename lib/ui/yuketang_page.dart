@@ -6,6 +6,7 @@ import '../yuketang/yuketang_service.dart';
 import '../yuketang/yuketang_session_store.dart';
 import 'timetable_format.dart';
 import 'yuketang_course_page.dart';
+import 'yuketang_web_login_page.dart';
 
 /// 雨课堂扫码登录与只读课程列表。
 ///
@@ -70,7 +71,6 @@ class _YuketangPageState extends State<YuketangPage> {
     if (!mounted || result == null) return;
 
     await _refresh(quiet: true);
-    if (mounted && _error == null) _showMessage('雨课堂登录成功');
   }
 
   Future<void> _refresh({bool quiet = false}) async {
@@ -89,7 +89,6 @@ class _YuketangPageState extends State<YuketangPage> {
         _state = state;
         _busy = false;
       });
-      if (!quiet) _showMessage('雨课堂课程已更新');
     } on YuketangException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -139,18 +138,12 @@ class _YuketangPageState extends State<YuketangPage> {
         _error = null;
         _sessionExpired = false;
       });
-      _showMessage('已退出雨课堂');
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = '退出雨课堂失败：$error');
     }
   }
 
-  void _showMessage(String text) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(text)));
-  }
 
   void _openCourse(YuketangCourse course) {
     Navigator.of(context).push(
@@ -227,7 +220,7 @@ class _YuketangPageState extends State<YuketangPage> {
               Text('登录雨课堂', style: theme.textTheme.titleMedium),
               const SizedBox(height: 4),
               Text(
-                '用微信或雨豆 App 扫码。当前阶段只读取账号和课程列表，不写入日程。',
+                '支持微信扫码或网页登录（账号密码、验证码都在网页内完成）。当前阶段只读取账号和课程列表，不写入日程。',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -235,8 +228,8 @@ class _YuketangPageState extends State<YuketangPage> {
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: _busy ? null : _login,
-                icon: const Icon(Icons.qr_code_2),
-                label: const Text('扫码登录'),
+                icon: const Icon(Icons.login),
+                label: const Text('登录雨课堂'),
               ),
             ],
           ),
@@ -348,8 +341,8 @@ class _YuketangPageState extends State<YuketangPage> {
                 alignment: Alignment.centerRight,
                 child: FilledButton.icon(
                   onPressed: _busy ? null : _login,
-                  icon: const Icon(Icons.qr_code_2),
-                  label: const Text('重新扫码登录'),
+                  icon: const Icon(Icons.login),
+                  label: const Text('重新登录'),
                 ),
               ),
             ],
@@ -457,21 +450,42 @@ class _YuketangQrSheet extends StatefulWidget {
   State<_YuketangQrSheet> createState() => _YuketangQrSheetState();
 }
 
+enum _YuketangLoginMode { qr, web }
+
 class _YuketangQrSheetState extends State<_YuketangQrSheet> {
+  final TextEditingController _accountController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
   YuketangLoginTicket? _ticket;
   YuketangLoginWatch? _watch;
+  _YuketangLoginMode _mode = _YuketangLoginMode.qr;
   bool _requesting = true;
+  bool _submitting = false;
+  bool _obscure = true;
   String? _message;
 
   @override
   void initState() {
     super.initState();
+    _loadCredentials();
     _start();
+  }
+
+  Future<void> _loadCredentials() async {
+    try {
+      final saved = await widget.service.loadSavedCredentials();
+      if (!mounted || saved == null) return;
+      _accountController.text = saved.$1;
+      _passwordController.text = saved.$2;
+    } catch (_) {
+      // 读取失败时保持空表单。
+    }
   }
 
   @override
   void dispose() {
     _watch?.cancel();
+    _accountController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
@@ -522,6 +536,52 @@ class _YuketangQrSheetState extends State<_YuketangQrSheet> {
     }
   }
 
+  void _switchMode(_YuketangLoginMode mode) {
+    if (mode == _mode) return;
+    _watch?.cancel();
+    setState(() {
+      _mode = mode;
+      _message = null;
+    });
+    if (mode == _YuketangLoginMode.qr) {
+      _start();
+    }
+  }
+
+  Future<void> _openWebLogin() async {
+    final account = _accountController.text.trim();
+    final password = _passwordController.text;
+    if (account.isEmpty || password.isEmpty) {
+      setState(() => _message = '请先填写手机号或邮箱和密码');
+      return;
+    }
+    setState(() => _message = null);
+    await widget.service.saveCredentials(account, password);
+    if (!mounted) return;
+    final cookies = await Navigator.of(context).push<Map<String, String>>(
+      MaterialPageRoute(
+        builder: (_) => YuketangWebLoginPage(
+          account: account,
+          password: password,
+        ),
+      ),
+    );
+    if (cookies == null || !mounted) return;
+    setState(() => _submitting = true);
+    try {
+      final result = await widget.service.loginWithCookies(cookies);
+      if (!mounted) return;
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(result);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = error.toString());
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -537,47 +597,127 @@ class _YuketangQrSheetState extends State<_YuketangQrSheet> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('扫码登录雨课堂', style: theme.textTheme.titleLarge),
-              const SizedBox(height: 8),
-              Text(
-                '用微信或雨豆 App 扫码，并在手机上确认；二维码 5 分钟内有效。',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 20),
-              _buildQr(),
+              Text('登录雨课堂', style: theme.textTheme.titleLarge),
               const SizedBox(height: 12),
-              if (_message != null)
+              SegmentedButton<_YuketangLoginMode>(
+                segments: const [
+                  ButtonSegment(
+                    value: _YuketangLoginMode.qr,
+                    label: Text('扫码登录'),
+                  ),
+                  ButtonSegment(
+                    value: _YuketangLoginMode.web,
+                    label: Text('网页登录'),
+                  ),
+                ],
+                selected: {_mode},
+                showSelectedIcon: false,
+                onSelectionChanged: (selection) =>
+                    _switchMode(selection.first),
+              ),
+              const SizedBox(height: 16),
+              if (_mode == _YuketangLoginMode.qr) ...[
                 Text(
-                  _message!,
+                  '用微信或雨豆 App 扫码，并在手机上确认；二维码 5 分钟内有效。',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.error,
+                    color: theme.colorScheme.onSurfaceVariant,
                   ),
-                )
-              else if (_ticket != null && !_requesting)
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    const SizedBox(width: 8),
-                    Text('等待扫码…', style: theme.textTheme.bodySmall),
-                  ],
                 ),
+                const SizedBox(height: 20),
+                _buildQr(),
+                const SizedBox(height: 12),
+                if (_message != null)
+                  Text(
+                    _message!,
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
+                  )
+                else if (_ticket != null && !_requesting)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 8),
+                      Text('等待扫码…', style: theme.textTheme.bodySmall),
+                    ],
+                  ),
+              ] else ...[
+                Text(
+                  '账号密码只写入本机安全存储；登录页会自动切换并填充表单，提交和验证码在网页内完成。',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _accountController,
+                  keyboardType: TextInputType.phone,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: '手机号或邮箱',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passwordController,
+                  obscureText: _obscure,
+                  textInputAction: TextInputAction.done,
+                  decoration: InputDecoration(
+                    labelText: '密码',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      tooltip: _obscure ? '显示密码' : '隐藏密码',
+                      onPressed: () => setState(() => _obscure = !_obscure),
+                      icon: Icon(
+                        _obscure
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                      ),
+                    ),
+                  ),
+                ),
+                if (_message != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      _message!,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _submitting ? null : _openWebLogin,
+                  icon: const Icon(Icons.public),
+                  label: _submitting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('打开网页并自动填充'),
+                ),
+              ],
               const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  TextButton(
-                    onPressed: _requesting ? null : _start,
-                    child: const Text('刷新二维码'),
-                  ),
+                  if (_mode == _YuketangLoginMode.qr)
+                    TextButton(
+                      onPressed: _requesting ? null : _start,
+                      child: const Text('刷新二维码'),
+                    ),
                   const SizedBox(width: 8),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),

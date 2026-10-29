@@ -251,7 +251,10 @@ class YuketangService {
     return null;
   }
 
-  /// 校验会话并刷新用户与课程。失败时保留上次缓存。
+  /// 校验会话并刷新用户、课程、正在上课和未截止作业。
+  ///
+  /// 课程列表是核心数据，必须成功；正在上课或单门课的学习日志失败只跳过，
+  /// 不影响课程列表落盘。会话失效时直接抛出，由界面提示重新扫码。
   Future<YuketangSnapshot> refresh() async {
     final state = await _store.load();
     if (!state.hasSession) {
@@ -270,10 +273,50 @@ class YuketangService {
       final (courses, courseCookies) = await _fetchCourses(cookies);
       cookies = courseCookies;
 
+      var liveLessons = const <YuketangLiveLesson>[];
+      try {
+        final (lessons, liveCookies) = await _fetchLiveLessons(cookies);
+        liveLessons = lessons;
+        cookies = mergeYuketangCookies(cookies, liveCookies);
+      } on YuketangException catch (error) {
+        if (error.needsLogin) rethrow;
+      } on DioException {
+        // 正在上课是附加信息，网络波动不阻断刷新。
+      }
+
+      final homeworks = <YuketangHomework>[];
+      final experiments = <YuketangExperiment>[];
+      final classCoursewares = <YuketangCourseware>[];
+      final activeCourses = [
+        for (final course in courses)
+          if (!course.isAudited) course,
+      ];
+      await _mapLimited(activeCourses, 3, (course) async {
+        try {
+          final (log, logCookies) = await _fetchCourseLogBase(course, cookies);
+          cookies = mergeYuketangCookies(cookies, logCookies);
+          homeworks.addAll(log.homeworks);
+          experiments.addAll(log.experiments);
+          classCoursewares.addAll(
+            log.coursewares.where((courseware) => courseware.isClassMaterial),
+          );
+        } on YuketangException catch (error) {
+          if (error.needsLogin) rethrow;
+        } on DioException {
+          // 单门课失败只跳过该课，保留其他课程的活跃项。
+        }
+      });
+      homeworks.sort(_compareDeadline);
+      experiments.sort(_compareExperimentDeadline);
+
       final snapshot = YuketangSnapshot(
         user: user,
         courses: courses,
         fetchedAt: _now(),
+        liveLessons: liveLessons,
+        homeworks: homeworks,
+        experiments: experiments,
+        classCoursewares: classCoursewares,
       );
       await _store.saveCookies(cookies);
       await _store.saveSnapshot(snapshot);
@@ -284,10 +327,10 @@ class YuketangService {
     }
   }
 
-  /// 读取一门课的学习日志，并逐条补全试卷详情。
+  /// 读取一门课的学习日志，并逐条补全作业状态和试卷详情。
   ///
-  /// 课件只取日志条目；试卷再读 `/v/exam/cover`。单条详情失败只标记该条，
-  /// 不影响整页；会话失效时直接抛出，由界面提示重新扫码。
+  /// 课件只取日志条目；作业额外读 `get_exercise_list`，试卷再读 `/v/exam/cover`。
+  /// 单条状态/详情失败只标记该条，不影响整页；会话失效时直接抛出。
   Future<YuketangCourseLog> fetchCourseLog(YuketangCourse course) async {
     final state = await _store.load();
     if (!state.hasSession) {
@@ -299,52 +342,11 @@ class YuketangService {
 
     var cookies = state.cookies;
     try {
-      final response = await _dio.get(
-        '/v2/api/web/logs/learn/${Uri.encodeComponent(course.classroomId)}',
-        queryParameters: const {
-          'page': 0,
-          'offset': 200,
-          'sort': -1,
-          'actype': -1,
-        },
-        options: Options(headers: _headers(cookies: cookies)),
-      );
-      cookies = mergeYuketangCookies(
-        cookies,
-        parseYuketangSetCookies(_setCookieHeaders(response)),
-      );
-      if (isYuketangSessionExpired(
-        statusCode: response.statusCode,
-        body: response.data,
-      )) {
-        throw _sessionExpiredError;
-      }
+      final (base, baseCookies) = await _fetchCourseLogBase(course, cookies);
+      cookies = baseCookies;
 
-      final map = asMap(response.data);
-      if (map == null) {
-        throw const YuketangException(
-          '雨课堂学习日志格式异常',
-          kind: YuketangFailureKind.api,
-        );
-      }
-      if (map['success'] == false) {
-        final code = asInt(map['error_code'] ?? map['sub_code']);
-        throw YuketangException(
-          '读取学习日志失败${code == null ? '' : '（$code）'}',
-          kind: YuketangFailureKind.api,
-        );
-      }
-      final errcode = asInt(map['errcode']);
-      if (errcode != null && errcode != 0) {
-        throw YuketangException(
-          '读取学习日志失败（errcode=$errcode）',
-          kind: YuketangFailureKind.api,
-        );
-      }
-
-      final parsed = parseYuketangCourseLog(course, map);
       final exams = <YuketangExam>[];
-      for (final exam in parsed.exams) {
+      for (final exam in base.exams) {
         if (exam.examId.isEmpty) {
           exams.add(exam.copyWith(detailError: '缺少试卷 ID，无法读取详情'));
           continue;
@@ -369,15 +371,428 @@ class YuketangService {
         }
       }
 
+      YuketangLiveLesson? liveLesson;
+      try {
+        final (lessons, liveCookies) = await _fetchLiveLessons(cookies);
+        cookies = mergeYuketangCookies(cookies, liveCookies);
+        for (final lesson in lessons) {
+          if (lesson.classroomId == course.classroomId) {
+            liveLesson = lesson;
+            break;
+          }
+        }
+      } on YuketangException catch (error) {
+        if (error.needsLogin) rethrow;
+      } on DioException {
+        // 正在上课只是附加提示，读取失败不影响课件和作业。
+      }
+
       await _store.saveCookies(cookies);
       return YuketangCourseLog(
         course: course,
-        coursewares: parsed.coursewares,
+        coursewares: base.coursewares,
+        homeworks: base.homeworks,
+        experiments: base.experiments,
         exams: exams,
+        liveLesson: liveLesson,
       );
     } on DioException catch (error) {
       throw _networkError(error, action: '读取学习日志');
     }
+  }
+
+  /// 只取学习日志并补全作业状态，不展开试卷详情、不查正在上课。
+  ///
+  /// 刷新概览时每门课只调用这一层，避免为所有历史试卷再打一次接口。
+  Future<(YuketangCourseLog, Map<String, String>)> _fetchCourseLogBase(
+    YuketangCourse course,
+    Map<String, String> cookies,
+  ) async {
+    final response = await _dio.get(
+      '/v2/api/web/logs/learn/${Uri.encodeComponent(course.classroomId)}',
+      queryParameters: const {
+        'page': 0,
+        'offset': 200,
+        'sort': -1,
+        'actype': -1,
+      },
+      options: Options(headers: _headers(cookies: cookies)),
+    );
+    var updated = mergeYuketangCookies(
+      cookies,
+      parseYuketangSetCookies(_setCookieHeaders(response)),
+    );
+    if (isYuketangSessionExpired(
+      statusCode: response.statusCode,
+      body: response.data,
+    )) {
+      throw _sessionExpiredError;
+    }
+
+    final map = asMap(response.data);
+    if (map == null) {
+      throw const YuketangException(
+        '雨课堂学习日志格式异常',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    if (map['success'] == false) {
+      final code = asInt(map['error_code'] ?? map['sub_code']);
+      throw YuketangException(
+        '读取学习日志失败${code == null ? '' : '（$code）'}',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    final errcode = asInt(map['errcode']);
+    if (errcode != null && errcode != 0) {
+      throw YuketangException(
+        '读取学习日志失败（errcode=$errcode）',
+        kind: YuketangFailureKind.api,
+      );
+    }
+
+    final parsed = parseYuketangCourseLog(course, map);
+    final (experiments, experimentCookies) = await _fetchExperiments(
+      course,
+      parsed.experiments,
+      updated,
+    );
+    updated = experimentCookies;
+    final now = _now();
+    final homeworks = await _mapLimited(parsed.homeworks, 3, (homework) async {
+      if (homework.leafTypeId.isEmpty) {
+        return homework.copyWith(statusError: '缺少作业 ID，无法读取状态');
+      }
+      if (!homework.isActive(now) && homework.deadline != null) {
+        // 已过期的作业不再查状态，控制请求量。
+        return homework;
+      }
+      try {
+        final (status, statusCookies) = await _fetchHomeworkStatus(
+          homework,
+          course.classroomId,
+          updated,
+        );
+        updated = mergeYuketangCookies(updated, statusCookies);
+        return status;
+      } on YuketangException catch (error) {
+        if (error.needsLogin) rethrow;
+        return homework.copyWith(statusError: error.message);
+      } on DioException catch (error) {
+        return homework.copyWith(
+          statusError: _networkError(error, action: '读取作业状态').message,
+        );
+      }
+    });
+
+    final experimentStatuses = await _mapLimited(
+      experiments,
+      3,
+      (experiment) async {
+        if (experiment.eventId.isEmpty) {
+          return experiment.copyWith(statusError: '缺少实验 ID，无法读取状态');
+        }
+        if (!experiment.isActive(now) && experiment.deadline != null) {
+          // 已过期的实验不再查报告状态，控制请求量。
+          return experiment;
+        }
+        try {
+          final (status, statusCookies) = await _fetchExperimentReport(
+            experiment,
+            course.classroomId,
+            updated,
+          );
+          updated = mergeYuketangCookies(updated, statusCookies);
+          return status;
+        } on YuketangException catch (error) {
+          if (error.needsLogin) rethrow;
+          return experiment.copyWith(statusError: error.message);
+        } on DioException catch (error) {
+          return experiment.copyWith(
+            statusError: _networkError(error, action: '读取实验状态').message,
+          );
+        }
+      },
+    );
+
+    return (
+      YuketangCourseLog(
+        course: course,
+        coursewares: parsed.coursewares,
+        homeworks: homeworks,
+        experiments: experimentStatuses,
+        exams: parsed.exams,
+      ),
+      updated,
+    );
+  }
+
+  /// 实验列表：网页端的「实验」栏用 `actype=100` 单独筛选。
+  ///
+  /// 全部类型（`actype=-1`）不一定返回实验，所以这里补一次显式请求；
+  /// 失败时保留主日志里的结果，不影响作业和课件。
+  Future<(List<YuketangExperiment>, Map<String, String>)> _fetchExperiments(
+    YuketangCourse course,
+    List<YuketangExperiment> initial,
+    Map<String, String> cookies,
+  ) async {
+    var updated = cookies;
+    var merged = initial;
+    try {
+      final response = await _dio.get(
+        '/v2/api/web/logs/learn/${Uri.encodeComponent(course.classroomId)}',
+        queryParameters: const {
+          'page': 0,
+          'offset': 200,
+          'sort': -1,
+          'actype': 100,
+        },
+        options: Options(headers: _headers(cookies: updated)),
+      );
+      updated = mergeYuketangCookies(
+        updated,
+        parseYuketangSetCookies(_setCookieHeaders(response)),
+      );
+      if (isYuketangSessionExpired(
+        statusCode: response.statusCode,
+        body: response.data,
+      )) {
+        throw _sessionExpiredError;
+      }
+
+      final map = asMap(response.data);
+      if (map != null) {
+        final errcode = asInt(map['errcode']);
+        if (errcode == null || errcode == 0) {
+          merged = _mergeExperiments(
+            merged,
+            parseYuketangCourseLog(course, map).experiments,
+          );
+        }
+      }
+    } on DioException {
+      // 实验栏是附加信息，网络失败时保留全部类型日志里的结果。
+    }
+    return (merged, updated);
+  }
+
+  List<YuketangExperiment> _mergeExperiments(
+    List<YuketangExperiment> current,
+    List<YuketangExperiment> incoming,
+  ) {
+    final map = <String, YuketangExperiment>{};
+    for (final experiment in [...current, ...incoming]) {
+      final key = experiment.eventId.isEmpty
+          ? experiment.id
+          : experiment.eventId;
+      map.putIfAbsent(key, () => experiment);
+    }
+    return map.values.toList()..sort(_compareExperimentDeadline);
+  }
+
+  /// 正在上课：`/api/v3/classroom/on-lesson` → `data.onLessonClassrooms[]`。
+  Future<(List<YuketangLiveLesson>, Map<String, String>)> _fetchLiveLessons(
+    Map<String, String> cookies,
+  ) async {
+    final response = await _dio.get(
+      '/api/v3/classroom/on-lesson',
+      options: Options(headers: _headers(cookies: cookies)),
+    );
+    final updated = mergeYuketangCookies(
+      cookies,
+      parseYuketangSetCookies(_setCookieHeaders(response)),
+    );
+    if (isYuketangSessionExpired(
+      statusCode: response.statusCode,
+      body: response.data,
+    )) {
+      throw _sessionExpiredError;
+    }
+
+    final map = asMap(response.data);
+    if (map == null) {
+      throw const YuketangException(
+        '雨课堂正在上课列表格式异常',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    final code = asInt(map['code']);
+    if (code != null && code != 0) {
+      throw YuketangException(
+        '读取正在上课失败（code=$code）',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    return (parseYuketangLiveLessons(map), updated);
+  }
+
+  /// 作业提交状态：`/mooc-api/v1/lms/exercise/get_exercise_list/{leaf_type_id}/`。
+  Future<(YuketangHomework, Map<String, String>)> _fetchHomeworkStatus(
+    YuketangHomework homework,
+    String classroomId,
+    Map<String, String> cookies,
+  ) async {
+    final uvId = cookies['uv_id'] ?? '';
+    final universityId = cookies['university_id'] ?? '';
+    final headers = _headers(cookies: cookies)
+      ..['classroom-id'] = classroomId
+      ..['xt-agent'] = 'web'
+      ..['x-client'] = 'web';
+    if (uvId.isNotEmpty) headers['uv-id'] = uvId;
+    if (universityId.isNotEmpty) headers['university-id'] = universityId;
+    final response = await _dio.get(
+      '/mooc-api/v1/lms/exercise/get_exercise_list/'
+      '${Uri.encodeComponent(homework.leafTypeId)}/',
+      queryParameters: {
+        'classroom_id': classroomId,
+        'term': 'latest',
+        if (uvId.isNotEmpty) 'uv_id': uvId,
+      },
+      options: Options(headers: headers),
+    );
+    final updated = mergeYuketangCookies(
+      cookies,
+      parseYuketangSetCookies(_setCookieHeaders(response)),
+    );
+    if (isYuketangSessionExpired(
+      statusCode: response.statusCode,
+      body: response.data,
+    )) {
+      throw _sessionExpiredError;
+    }
+
+    final map = asMap(response.data);
+    if (map == null) {
+      throw const YuketangException(
+        '作业状态格式异常',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    if (map['success'] == false) {
+      final code = asInt(map['error_code'] ?? map['sub_code']);
+      throw YuketangException(
+        '读取作业状态失败${code == null ? '' : '（$code）'}',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    final errcode = asInt(map['errcode']);
+    if (errcode != null && errcode != 0) {
+      throw YuketangException(
+        '读取作业状态失败（errcode=$errcode）',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    return (parseYuketangHomeworkStatus(homework, map), updated);
+  }
+
+  /// 实验报告：`POST /v2/api/web/experiment/report`。
+  ///
+  /// 与网页端一致，`data` 为空表示还没提交报告。
+  Future<(YuketangExperiment, Map<String, String>)> _fetchExperimentReport(
+    YuketangExperiment experiment,
+    String classroomId,
+    Map<String, String> cookies,
+  ) async {
+    final uvId = cookies['uv_id'] ?? '';
+    final headers = _headers(cookies: cookies);
+    final csrf = cookies['csrftoken'] ?? '';
+    if (csrf.isNotEmpty) headers['X-CSRFToken'] = csrf;
+    final response = await _dio.post(
+      '/v2/api/web/experiment/report',
+      data: {
+        'classroom_id': classroomId,
+        'event_id': experiment.eventId,
+      },
+      queryParameters: {
+        if (uvId.isNotEmpty) 'uv_id': uvId,
+      },
+      options: Options(headers: headers, contentType: Headers.jsonContentType),
+    );
+    final updated = mergeYuketangCookies(
+      cookies,
+      parseYuketangSetCookies(_setCookieHeaders(response)),
+    );
+    if (isYuketangSessionExpired(
+      statusCode: response.statusCode,
+      body: response.data,
+    )) {
+      throw _sessionExpiredError;
+    }
+
+    final map = asMap(response.data);
+    if (map == null) {
+      throw const YuketangException(
+        '实验状态格式异常',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    if (map['success'] == false) {
+      final code = asInt(map['error_code'] ?? map['sub_code']);
+      throw YuketangException(
+        '读取实验状态失败${code == null ? '' : '（$code）'}',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    final errcode = asInt(map['errcode']);
+    if (errcode != null && errcode != 0) {
+      throw YuketangException(
+        '读取实验状态失败（errcode=$errcode）',
+        kind: YuketangFailureKind.api,
+      );
+    }
+    return (parseYuketangExperimentReport(experiment, map), updated);
+  }
+
+  /// 限制并发地执行异步任务；单条失败由调用方捕获。
+  Future<List<R>> _mapLimited<T, R>(
+    List<T> items,
+    int limit,
+    Future<R> Function(T item) action,
+  ) async {
+    if (items.isEmpty) return <R>[];
+    final results = List<R?>.filled(items.length, null);
+    var next = 0;
+
+    Future<void> worker() async {
+      while (true) {
+        final index = next;
+        next++;
+        if (index >= items.length) return;
+        results[index] = await action(items[index]);
+      }
+    }
+
+    final workers = <Future<void>>[];
+    for (var index = 0; index < limit && index < items.length; index++) {
+      workers.add(worker());
+    }
+    await Future.wait(workers);
+    return [for (final result in results) result as R];
+  }
+
+  int _compareDeadline(YuketangHomework left, YuketangHomework right) {
+    final leftDeadline = left.deadline;
+    final rightDeadline = right.deadline;
+    if (leftDeadline == null && rightDeadline == null) {
+      return left.title.compareTo(right.title);
+    }
+    if (leftDeadline == null) return 1;
+    if (rightDeadline == null) return -1;
+    return leftDeadline.compareTo(rightDeadline);
+  }
+
+  int _compareExperimentDeadline(
+    YuketangExperiment left,
+    YuketangExperiment right,
+  ) {
+    final leftDeadline = left.deadline;
+    final rightDeadline = right.deadline;
+    if (leftDeadline == null && rightDeadline == null) {
+      return left.title.compareTo(right.title);
+    }
+    if (leftDeadline == null) return 1;
+    if (rightDeadline == null) return -1;
+    return leftDeadline.compareTo(rightDeadline);
   }
 
   Future<(YuketangExam, Map<String, String>)> _fetchExamDetail(

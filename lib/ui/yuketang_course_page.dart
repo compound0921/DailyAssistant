@@ -87,7 +87,7 @@ class _YuketangCoursePageState extends State<YuketangCoursePage> {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _buildCourseCard(theme),
+                _buildCourseCard(theme, log),
                 if (_loading) ...[
                   const SizedBox(height: 12),
                   const LinearProgressIndicator(),
@@ -108,13 +108,17 @@ class _YuketangCoursePageState extends State<YuketangCoursePage> {
                   const SizedBox(height: 12),
                   if (_tab == 0)
                     _buildCoursewares(theme, log.coursewares)
+                  else if (_tab == 1)
+                    _buildHomeworks(theme, log.homeworks)
+                  else if (_tab == 2)
+                    _buildExperiments(theme, log.experiments)
                   else
                     _buildExams(theme, log.exams),
                 ],
                 const SizedBox(height: 24),
                 Text(
                   '只读展示：不签到、不答题、不提交。'
-                  '课件只取学习日志条目；试卷详情来自学生端接口。',
+                  '课件、作业、实验和试卷均来自学生端接口；已过期作业和实验不再查询状态。',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -128,13 +132,14 @@ class _YuketangCoursePageState extends State<YuketangCoursePage> {
     );
   }
 
-  Widget _buildCourseCard(ThemeData theme) {
+  Widget _buildCourseCard(ThemeData theme, YuketangCourseLog? log) {
     final course = widget.course;
     final title = course.className.isEmpty ? course.name : course.className;
     final subtitle = [
       if (course.teacher.isNotEmpty) course.teacher,
       if (course.isAudited) '旁听',
     ].join(' · ');
+    final live = log?.liveLesson != null;
 
     return Card(
       child: Padding(
@@ -158,6 +163,22 @@ class _YuketangCoursePageState extends State<YuketangCoursePage> {
                 ],
               ),
             ),
+            if (live) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.errorContainer,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '正在上课',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -171,14 +192,14 @@ class _YuketangCoursePageState extends State<YuketangCoursePage> {
         segments: [
           ButtonSegment(
             value: 0,
-            icon: const Icon(Icons.slideshow_outlined),
-            label: Text('课件（${log.coursewares.length}）'),
+            label: Text('课件 ${log.coursewares.length}'),
           ),
+          ButtonSegment(value: 1, label: Text('作业 ${log.homeworks.length}')),
           ButtonSegment(
-            value: 1,
-            icon: const Icon(Icons.assignment_outlined),
-            label: Text('试卷（${log.exams.length}）'),
+            value: 2,
+            label: Text('实验 ${log.experiments.length}'),
           ),
+          ButtonSegment(value: 3, label: Text('试卷 ${log.exams.length}')),
         ],
         selected: {_tab},
         showSelectedIcon: false,
@@ -227,18 +248,265 @@ class _YuketangCoursePageState extends State<YuketangCoursePage> {
   }
 
   Widget _buildCoursewareRow(ThemeData theme, YuketangCourseware courseware) {
-    return Column(
+    final meta = [
+      if (courseware.createdAt != null)
+        formatDateTime(courseware.createdAt!),
+      if (courseware.isClassMaterial) '班级课件',
+      if (courseware.progressLabel != null)
+        courseware.progressLabel!
+      else if (courseware.pageCount != null)
+        '${courseware.pageCount} 页',
+    ];
+    return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(courseware.title, style: theme.textTheme.bodyLarge),
-        if (courseware.createdAt != null)
-          Text(
-            formatDateTime(courseware.createdAt!),
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(courseware.title, style: theme.textTheme.bodyLarge),
+              if (meta.isNotEmpty)
+                Text(
+                  meta.join(' · '),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
           ),
+        ),
+        if (courseware.isClassMaterial) ...[
+          const SizedBox(width: 8),
+          _statusChip(theme, courseware.statusLabel(DateTime.now())),
+        ],
       ],
+    );
+  }
+
+  Widget _buildHomeworks(
+    ThemeData theme,
+    List<YuketangHomework> homeworks,
+  ) {
+    if (homeworks.isEmpty) {
+      return _emptyCard(theme, '这门课暂无作业。');
+    }
+
+    final now = DateTime.now();
+    // 未截止的作业排在前面，历史作业保持截止时间升序。
+    final sorted = [...homeworks]
+      ..sort((left, right) {
+        final leftActive = left.isActive(now);
+        final rightActive = right.isActive(now);
+        if (leftActive != rightActive) return leftActive ? -1 : 1;
+        final leftDeadline = left.deadline;
+        final rightDeadline = right.deadline;
+        if (leftDeadline == null && rightDeadline == null) {
+          return left.title.compareTo(right.title);
+        }
+        if (leftDeadline == null) return 1;
+        if (rightDeadline == null) return -1;
+        return leftDeadline.compareTo(rightDeadline);
+      });
+
+    return Column(
+      children: [
+        for (var index = 0; index < sorted.length; index++) ...[
+          if (index > 0) const SizedBox(height: 12),
+          _buildHomeworkCard(theme, sorted[index]),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildHomeworkCard(ThemeData theme, YuketangHomework homework) {
+    final now = DateTime.now();
+    final meta = [
+      if (homework.answeredCount != null && homework.problemCount != null)
+        '已答 ${homework.answeredCount}/${homework.problemCount}',
+      if (homework.score != null) '得分 ${_formatNumber(homework.score!)}',
+      if (homework.totalScore != null)
+        '总分 ${_formatNumber(homework.totalScore!)}',
+    ];
+    final overdue =
+        homework.deadline != null && homework.deadline!.isBefore(now) &&
+        homework.isPending;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    homework.title,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+                if (homework.status.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  _statusChip(theme, homework.status),
+                ],
+              ],
+            ),
+            if (meta.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(meta.join(' · '), style: theme.textTheme.bodySmall),
+            ],
+            if (homework.createdAt != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '发布 ${formatDateTime(homework.createdAt!)}',
+                  style: _muted(theme),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                formatDueLabel(homework.deadline, now: now),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: overdue
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontWeight: overdue ? FontWeight.w600 : null,
+                ),
+              ),
+            ),
+            if (homework.status.isEmpty && homework.statusError == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('未读取提交状态', style: _muted(theme)),
+              ),
+            if (homework.statusError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '状态读取失败：${homework.statusError}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExperiments(
+    ThemeData theme,
+    List<YuketangExperiment> experiments,
+  ) {
+    if (experiments.isEmpty) {
+      return _emptyCard(theme, '这门课暂无实验。');
+    }
+
+    final now = DateTime.now();
+    final sorted = [...experiments]
+      ..sort((left, right) {
+        final leftActive = left.isActive(now);
+        final rightActive = right.isActive(now);
+        if (leftActive != rightActive) return leftActive ? -1 : 1;
+        final leftDeadline = left.deadline;
+        final rightDeadline = right.deadline;
+        if (leftDeadline == null && rightDeadline == null) {
+          return left.title.compareTo(right.title);
+        }
+        if (leftDeadline == null) return 1;
+        if (rightDeadline == null) return -1;
+        return leftDeadline.compareTo(rightDeadline);
+      });
+
+    return Column(
+      children: [
+        for (var index = 0; index < sorted.length; index++) ...[
+          if (index > 0) const SizedBox(height: 12),
+          _buildExperimentCard(theme, sorted[index]),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildExperimentCard(
+    ThemeData theme,
+    YuketangExperiment experiment,
+  ) {
+    final now = DateTime.now();
+    final overdue =
+        experiment.deadline != null &&
+        experiment.deadline!.isBefore(now) &&
+        experiment.isPending;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    experiment.title,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+                if (experiment.status.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  _statusChip(theme, experiment.status),
+                ],
+              ],
+            ),
+            if (experiment.score != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                '得分 ${_formatNumber(experiment.score!)}',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+            if (experiment.createdAt != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '发布 ${formatDateTime(experiment.createdAt!)}',
+                  style: _muted(theme),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                formatDueLabel(experiment.deadline, now: now),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: overdue
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontWeight: overdue ? FontWeight.w600 : null,
+                ),
+              ),
+            ),
+            if (experiment.status.isEmpty && experiment.statusError == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('未读取提交状态', style: _muted(theme)),
+              ),
+            if (experiment.statusError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '状态读取失败：${experiment.statusError}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 

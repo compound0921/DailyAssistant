@@ -20,6 +20,7 @@ import '../notifications/deadline_notifications.dart';
 import '../notifications/deadline_pin.dart';
 import '../xuexitong/xuexitong_deadline_mapper.dart';
 import '../xuexitong/xuexitong_service.dart';
+import '../yuketang/yuketang_models.dart';
 import '../yuketang/yuketang_service.dart';
 import 'app_theme.dart';
 import 'course_edit_page.dart';
@@ -86,6 +87,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   SyncTarget _syncTarget = SyncTarget.xuexitong;
   List<JiaowuMessage> _jiaowuMessages = const [];
   List<JiaowuExam> _jiaowuExams = const [];
+  YuketangSnapshot? _yuketangSnapshot;
   bool _deadlineCollapsed = false;
   bool _examCollapsed = false;
   Set<String> _deadlineTagFilters = {};
@@ -104,6 +106,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _deadlineCollapsed = widget.initialDeadlineCollapsed;
     _examCollapsed = widget.initialExamCollapsed;
     _loadJiaowuSnapshot();
+    unawaited(_loadYuketangSnapshot());
     unawaited(_loadNotificationSettings());
     unawaited(_cleanupJiaowuDeadlines());
     _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
@@ -166,6 +169,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _loadYuketangSnapshot() async {
+    try {
+      final state = await _yuketangService.loadStoredState();
+      if (!mounted) return;
+      setState(() => _yuketangSnapshot = state.snapshot);
+    } catch (_) {
+      // 本地状态读取失败不影响主界面。
+    }
+  }
+
   /// 旧版本会把教务考试自动写成日程；现在考试只进“考试安排”，
   /// 启动时清理这些历史自动条目，手动和学习通日程保持不变。
   Future<void> _cleanupJiaowuDeadlines() async {
@@ -181,6 +194,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() => _section = section);
     if (section == _HomeSection.home) {
       unawaited(_loadJiaowuSnapshot());
+      unawaited(_loadYuketangSnapshot());
     }
   }
 
@@ -350,16 +364,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _autoCheckYuketang() async {
+  Future<void> _autoCheckYuketang({bool force = false}) async {
     try {
       final state = await _yuketangService.loadStoredState();
       if (!state.hasSession) return;
       final checkedAt = state.lastCheckedAt;
-      if (checkedAt != null &&
+      if (!force &&
+          checkedAt != null &&
           DateTime.now().difference(checkedAt) < _autoSyncInterval) {
         return;
       }
       await _yuketangService.refresh();
+      final updated = await _yuketangService.loadStoredState();
+      if (!mounted) return;
+      setState(() => _yuketangSnapshot = updated.snapshot);
     } catch (_) {
       // 静默：会话失效或网络异常都不在启动时打扰用户。
     }
@@ -494,6 +512,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // 串行合并，避免两个来源同时基于旧列表写入。
     await _autoSyncXuexitong(force: true, report: true);
     await _autoSyncJiaowu(force: true, report: true);
+    await _autoCheckYuketang(force: true);
   }
 
   String _xuexitongSummary(XuexitongMergeResult result) {
@@ -1025,6 +1044,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           onRefresh: _refreshFromPull,
           jiaowuMessages: _jiaowuMessages,
           jiaowuExams: _jiaowuExams,
+          yuketangSnapshot: _yuketangSnapshot,
           onAddExam: _addJiaowuExam,
           onEditExam: _editJiaowuExam,
           onDeleteExam: _deleteJiaowuExam,
@@ -1105,6 +1125,7 @@ class _HomeOverview extends StatelessWidget {
     required this.onRefresh,
     required this.jiaowuMessages,
     required this.jiaowuExams,
+    required this.yuketangSnapshot,
     required this.onAddExam,
     required this.onEditExam,
     required this.onDeleteExam,
@@ -1129,6 +1150,7 @@ class _HomeOverview extends StatelessWidget {
   final Future<void> Function() onRefresh;
   final List<JiaowuMessage> jiaowuMessages;
   final List<JiaowuExam> jiaowuExams;
+  final YuketangSnapshot? yuketangSnapshot;
   final VoidCallback onAddExam;
   final ValueChanged<JiaowuExam> onEditExam;
   final ValueChanged<JiaowuExam> onDeleteExam;
@@ -1200,6 +1222,18 @@ class _HomeOverview extends StatelessWidget {
           ];
     final nearest = filtered.take(3).toList();
     final homeExams = homeVisibleExams(exams: jiaowuExams, now: now);
+    final yuketangLive = yuketangSnapshot?.liveLessonsAt(now) ?? const [];
+    final yuketangHomeworks =
+        yuketangSnapshot?.activeHomeworks(now) ?? const [];
+    final yuketangExperiments =
+        yuketangSnapshot?.activeExperiments(now) ?? const [];
+    final yuketangCoursewares =
+        yuketangSnapshot?.unreadClassCoursewares(now) ?? const [];
+    final hasYuketangActive =
+        yuketangLive.isNotEmpty ||
+        yuketangHomeworks.isNotEmpty ||
+        yuketangExperiments.isNotEmpty ||
+        yuketangCoursewares.isNotEmpty;
 
     final left = <Widget>[
       _HomeDateHeader(now: now, week: week, inTerm: inTerm),
@@ -1222,6 +1256,18 @@ class _HomeOverview extends StatelessWidget {
           periodSchedule: active!.periodSchedule,
           nowMinutes: nowMinutes,
           onTap: onOpenTimetable,
+        ),
+      ],
+      if (hasYuketangActive) ...[
+        const SizedBox(height: AppSpacing.md),
+        _HomeYuketangPreview(
+          liveLessons: yuketangLive,
+          homeworks: yuketangHomeworks,
+          experiments: yuketangExperiments,
+          coursewares: yuketangCoursewares,
+          fetchedAt: yuketangSnapshot!.fetchedAt,
+          now: now,
+          onOpen: () => onOpenSync(SyncTarget.yuketang),
         ),
       ],
     ];
@@ -2466,6 +2512,452 @@ class _HomeExamRow extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 首页的雨课堂活跃卡：正在上课 + 最近的未截止作业。
+class _HomeYuketangPreview extends StatelessWidget {
+  const _HomeYuketangPreview({
+    required this.liveLessons,
+    required this.homeworks,
+    required this.experiments,
+    required this.coursewares,
+    required this.fetchedAt,
+    required this.now,
+    required this.onOpen,
+  });
+
+  final List<YuketangLiveLesson> liveLessons;
+  final List<YuketangHomework> homeworks;
+  final List<YuketangExperiment> experiments;
+  final List<YuketangCourseware> coursewares;
+  final DateTime fetchedAt;
+  final DateTime now;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final visibleHomeworks = homeworks.take(3).toList();
+    final visibleExperiments = experiments.take(2).toList();
+    final visibleCoursewares = coursewares.take(2).toList();
+    final hiddenCount =
+        homeworks.length -
+        visibleHomeworks.length +
+        experiments.length -
+        visibleExperiments.length +
+        coursewares.length -
+        visibleCoursewares.length;
+    final stale = now.difference(fetchedAt) > const Duration(hours: 1);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text('雨课堂', style: theme.textTheme.titleMedium),
+            const Spacer(),
+            IconButton(
+              tooltip: '查看雨课堂',
+              onPressed: onOpen,
+              icon: const Icon(Icons.visibility_outlined, size: 20),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Card(
+          child: Column(
+            children: [
+              for (var index = 0; index < liveLessons.length; index++) ...[
+                if (index > 0)
+                  Divider(
+                    height: 1,
+                    indent: 16,
+                    color: theme.colorScheme.outlineVariant,
+                  ),
+                _HomeYuketangLiveRow(
+                  lesson: liveLessons[index],
+                  onTap: onOpen,
+                ),
+              ],
+              for (var index = 0; index < visibleHomeworks.length; index++) ...[
+                if (index > 0 || liveLessons.isNotEmpty)
+                  Divider(
+                    height: 1,
+                    indent: 16,
+                    color: theme.colorScheme.outlineVariant,
+                  ),
+                _HomeYuketangHomeworkRow(
+                  homework: visibleHomeworks[index],
+                  now: now,
+                  onTap: onOpen,
+                ),
+              ],
+              for (var index = 0; index < visibleExperiments.length; index++) ...[
+                if (index > 0 ||
+                    liveLessons.isNotEmpty ||
+                    visibleHomeworks.isNotEmpty)
+                  Divider(
+                    height: 1,
+                    indent: 16,
+                    color: theme.colorScheme.outlineVariant,
+                  ),
+                _HomeYuketangExperimentRow(
+                  experiment: visibleExperiments[index],
+                  now: now,
+                  onTap: onOpen,
+                ),
+              ],
+              for (var index = 0; index < visibleCoursewares.length; index++) ...[
+                if (index > 0 ||
+                    liveLessons.isNotEmpty ||
+                    visibleHomeworks.isNotEmpty ||
+                    visibleExperiments.isNotEmpty)
+                  Divider(
+                    height: 1,
+                    indent: 16,
+                    color: theme.colorScheme.outlineVariant,
+                  ),
+                _HomeYuketangCoursewareRow(
+                  courseware: visibleCoursewares[index],
+                  now: now,
+                  onTap: onOpen,
+                ),
+              ],
+              if (hiddenCount > 0)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    0,
+                    AppSpacing.lg,
+                    AppSpacing.md,
+                  ),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '另有 $hiddenCount 项未截止任务',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              if (stale)
+                Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    0,
+                    AppSpacing.lg,
+                    AppSpacing.md,
+                  ),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '更新于 ${formatDateTime(fetchedAt)}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HomeYuketangLiveRow extends StatelessWidget {
+  const _HomeYuketangLiveRow({required this.lesson, required this.onTap});
+
+  final YuketangLiveLesson lesson;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final subtitle = [
+      if (lesson.className.isNotEmpty) lesson.className,
+      if (lesson.isAudited) '旁听',
+    ].join(' · ');
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.podcasts, size: 20, color: theme.colorScheme.error),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    lesson.courseName,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  if (subtitle.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            _HomeYuketangChip(
+              text: '正在上课',
+              backgroundColor: theme.colorScheme.errorContainer,
+              foregroundColor: theme.colorScheme.onErrorContainer,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeYuketangHomeworkRow extends StatelessWidget {
+  const _HomeYuketangHomeworkRow({
+    required this.homework,
+    required this.now,
+    required this.onTap,
+  });
+
+  final YuketangHomework homework;
+  final DateTime now;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final status = homework.status.isEmpty ? '待完成' : homework.status;
+    final meta = [
+      if (homework.courseName.isNotEmpty) homework.courseName,
+      formatDueLabel(homework.deadline, now: now),
+    ].join(' · ');
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.assignment_outlined,
+              size: 20,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    homework.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    meta,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            _HomeYuketangChip(text: status),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeYuketangExperimentRow extends StatelessWidget {
+  const _HomeYuketangExperimentRow({
+    required this.experiment,
+    required this.now,
+    required this.onTap,
+  });
+
+  final YuketangExperiment experiment;
+  final DateTime now;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final status = experiment.status.isEmpty ? '待完成' : experiment.status;
+    final meta = [
+      if (experiment.courseName.isNotEmpty) experiment.courseName,
+      formatDueLabel(experiment.deadline, now: now),
+    ].join(' · ');
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.science_outlined,
+              size: 20,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    experiment.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    meta,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            _HomeYuketangChip(text: status),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeYuketangCoursewareRow extends StatelessWidget {
+  const _HomeYuketangCoursewareRow({
+    required this.courseware,
+    required this.now,
+    required this.onTap,
+  });
+
+  final YuketangCourseware courseware;
+  final DateTime now;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final meta = [
+      if (courseware.courseName.isNotEmpty) courseware.courseName,
+      '班级课件',
+      if (courseware.progressLabel != null)
+        courseware.progressLabel!
+      else if (courseware.pageCount != null)
+        '${courseware.pageCount} 页',
+    ].join(' · ');
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.description_outlined,
+              size: 20,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    courseware.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    meta,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            _HomeYuketangChip(text: courseware.statusLabel(now)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeYuketangChip extends StatelessWidget {
+  const _HomeYuketangChip({
+    required this.text,
+    this.backgroundColor,
+    this.foregroundColor,
+  });
+
+  final String text;
+  final Color? backgroundColor;
+  final Color? foregroundColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final background = backgroundColor ?? theme.colorScheme.primaryContainer;
+    final foreground = foregroundColor ?? theme.colorScheme.onPrimaryContainer;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall?.copyWith(color: foreground),
       ),
     );
   }

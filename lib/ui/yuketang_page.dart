@@ -184,6 +184,7 @@ class _YuketangPageState extends State<YuketangPage> {
                 _buildErrorCard(theme),
               ],
               if (_state?.hasSession ?? false) ...[
+                _buildActiveCard(theme),
                 const SizedBox(height: 12),
                 _buildCoursesCard(theme),
               ],
@@ -352,6 +353,299 @@ class _YuketangPageState extends State<YuketangPage> {
     );
   }
 
+  /// 正在上课 + 未截止未提交的作业，放在账号卡下方。
+  Widget _buildActiveCard(ThemeData theme) {
+    final snapshot = _state?.snapshot;
+    if (snapshot == null) return const SizedBox.shrink();
+    final now = DateTime.now();
+    final live = snapshot.liveLessonsAt(now);
+    final homeworks = snapshot.activeHomeworks(now);
+    final experiments = snapshot.activeExperiments(now);
+    final coursewares = snapshot.unreadClassCoursewares(now);
+    if (live.isEmpty &&
+        homeworks.isEmpty &&
+        experiments.isEmpty &&
+        coursewares.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.bolt, color: theme.colorScheme.primary),
+                  const SizedBox(width: 8),
+                  Text('活跃', style: theme.textTheme.titleMedium),
+                ],
+              ),
+              if (live.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (var index = 0; index < live.length; index++) ...[
+                  if (index > 0) const Divider(height: 20),
+                  _buildLiveRow(theme, live[index]),
+                ],
+              ],
+              if (homeworks.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (var index = 0; index < homeworks.length; index++) ...[
+                  if (index > 0 || live.isNotEmpty) const Divider(height: 20),
+                  _buildActiveHomeworkRow(theme, homeworks[index], now),
+                ],
+              ],
+              if (experiments.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (var index = 0; index < experiments.length; index++) ...[
+                  if (index > 0 || live.isNotEmpty || homeworks.isNotEmpty)
+                    const Divider(height: 20),
+                  _buildActiveExperimentRow(theme, experiments[index], now),
+                ],
+              ],
+              if (coursewares.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (var index = 0; index < coursewares.length; index++) ...[
+                  if (index > 0 ||
+                      live.isNotEmpty ||
+                      homeworks.isNotEmpty ||
+                      experiments.isNotEmpty)
+                    const Divider(height: 20),
+                  _buildActiveCoursewareRow(theme, coursewares[index], now),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLiveRow(ThemeData theme, YuketangLiveLesson lesson) {
+    final subtitle = [
+      if (lesson.className.isNotEmpty) lesson.className,
+      if (lesson.isAudited) '旁听',
+    ].join(' · ');
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.podcasts, size: 18, color: theme.colorScheme.error),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(lesson.courseName, style: theme.textTheme.bodyLarge),
+              if (subtitle.isNotEmpty)
+                Text(
+                  subtitle,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        _activeChip(
+          theme,
+          '正在上课',
+          backgroundColor: theme.colorScheme.errorContainer,
+          foregroundColor: theme.colorScheme.onErrorContainer,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildActiveHomeworkRow(
+    ThemeData theme,
+    YuketangHomework homework,
+    DateTime now,
+  ) {
+    final status = homework.status.isEmpty ? '待完成' : homework.status;
+    final meta = [
+      if (homework.courseName.isNotEmpty) homework.courseName,
+      if (homework.answeredCount != null && homework.problemCount != null)
+        '已答 ${homework.answeredCount}/${homework.problemCount}',
+      formatDueLabel(homework.deadline, now: now),
+    ].join(' · ');
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          Icons.assignment_outlined,
+          size: 18,
+          color: theme.colorScheme.primary,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                homework.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyLarge,
+              ),
+              Text(
+                meta,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: _dueColor(theme, homework.deadline, now),
+                ),
+              ),
+              if (homework.statusError != null)
+                Text(
+                  '状态读取失败：${homework.statusError}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        _activeChip(theme, status),
+      ],
+    );
+  }
+
+  Widget _buildActiveExperimentRow(
+    ThemeData theme,
+    YuketangExperiment experiment,
+    DateTime now,
+  ) {
+    final status = experiment.status.isEmpty ? '待完成' : experiment.status;
+    final meta = [
+      if (experiment.courseName.isNotEmpty) experiment.courseName,
+      formatDueLabel(experiment.deadline, now: now),
+    ].join(' · ');
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          Icons.science_outlined,
+          size: 18,
+          color: theme.colorScheme.primary,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                experiment.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyLarge,
+              ),
+              Text(
+                meta,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: _dueColor(theme, experiment.deadline, now),
+                ),
+              ),
+              if (experiment.statusError != null)
+                Text(
+                  '状态读取失败：${experiment.statusError}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        _activeChip(theme, status),
+      ],
+    );
+  }
+
+  Widget _buildActiveCoursewareRow(
+    ThemeData theme,
+    YuketangCourseware courseware,
+    DateTime now,
+  ) {
+    final meta = [
+      if (courseware.courseName.isNotEmpty) courseware.courseName,
+      '班级课件',
+      if (courseware.progressLabel != null)
+        courseware.progressLabel!
+      else if (courseware.pageCount != null)
+        '${courseware.pageCount} 页',
+    ].join(' · ');
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          Icons.description_outlined,
+          size: 18,
+          color: theme.colorScheme.primary,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                courseware.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyLarge,
+              ),
+              Text(
+                meta,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        _activeChip(theme, courseware.statusLabel(now)),
+      ],
+    );
+  }
+
+  Widget _activeChip(
+    ThemeData theme,
+    String text, {
+    Color? backgroundColor,
+    Color? foregroundColor,
+  }) {
+    final background = backgroundColor ?? theme.colorScheme.primaryContainer;
+    final foreground = foregroundColor ?? theme.colorScheme.onPrimaryContainer;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall?.copyWith(color: foreground),
+      ),
+    );
+  }
+
+  Color _dueColor(ThemeData theme, DateTime? due, DateTime now) {
+    if (due == null) return theme.colorScheme.onSurfaceVariant;
+    if (due.isBefore(now)) return theme.colorScheme.error;
+    if (due.difference(now) <= const Duration(days: 3)) {
+      return theme.brightness == Brightness.dark
+          ? const Color(0xFFFB923C)
+          : const Color(0xFF9A3412);
+    }
+    return theme.colorScheme.onSurfaceVariant;
+  }
+
   Widget _buildCoursesCard(ThemeData theme) {
     final courses = _state?.courses ?? const <YuketangCourse>[];
     return Card(
@@ -376,7 +670,7 @@ class _YuketangPageState extends State<YuketangPage> {
             const SizedBox(height: 8),
             if (courses.isNotEmpty)
               Text(
-                '点课程查看课件和试卷。',
+                '点课程查看课件、作业和试卷。',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -406,6 +700,11 @@ class _YuketangPageState extends State<YuketangPage> {
       if (course.teacher.isNotEmpty) course.teacher,
       if (course.isAudited) '旁听',
     ].join(' · ');
+    final live =
+        _state?.snapshot
+            ?.liveLessonsAt(DateTime.now())
+            .any((lesson) => lesson.classroomId == course.classroomId) ??
+        false;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: () => _openCourse(course),
@@ -428,6 +727,15 @@ class _YuketangPageState extends State<YuketangPage> {
                 ],
               ),
             ),
+            if (live) ...[
+              const SizedBox(width: 8),
+              _activeChip(
+                theme,
+                '正在上课',
+                backgroundColor: theme.colorScheme.errorContainer,
+                foregroundColor: theme.colorScheme.onErrorContainer,
+              ),
+            ],
             const SizedBox(width: 8),
             Icon(
               Icons.chevron_right,

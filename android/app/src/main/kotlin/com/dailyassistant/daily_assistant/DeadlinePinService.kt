@@ -115,8 +115,11 @@ class DeadlinePinService : Service() {
      * 副本必须是非前台服务的普通、非常驻通知，否则同样会被锁屏过滤。
      */
     private fun updateLockScreenCopy(content: PinContent) {
-        if (!needsLockScreenCopy) return
         val manager = getSystemService(NotificationManager::class.java)
+        if (!needsLockScreenCopy) {
+            clearLockScreenCopies(manager)
+            return
+        }
         val enabled = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
             .getBoolean(LOCK_SCREEN_ENABLED_KEY, true)
         val locked = enabled &&
@@ -137,11 +140,19 @@ class DeadlinePinService : Service() {
                 buildNotification(content, ongoing = false, group = "$GROUP_KEY.lock"),
             )
         } else {
-            manager.cancel(LOCK_SCREEN_ID)
+            clearLockScreenCopies(manager)
+            return
         }
         // 清掉多余的旧副本；解锁时把卡片副本全部移除。
         val keep = if (locked) content.cards.size else 0
         for (index in keep until MAX_CARDS) {
+            manager.cancel(LOCK_SCREEN_CARD_ID_BASE + index)
+        }
+    }
+
+    private fun clearLockScreenCopies(manager: NotificationManager) {
+        manager.cancel(LOCK_SCREEN_ID)
+        for (index in 0 until MAX_CARDS) {
             manager.cancel(LOCK_SCREEN_CARD_ID_BASE + index)
         }
     }
@@ -342,10 +353,7 @@ class DeadlinePinService : Service() {
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.cancel(NOTIFICATION_ID)
-        manager.cancel(LOCK_SCREEN_ID)
-        for (index in 0 until MAX_CARDS) {
-            manager.cancel(LOCK_SCREEN_CARD_ID_BASE + index)
-        }
+        clearLockScreenCopies(manager)
     }
 
     private fun stopSelfAndCancel() {
@@ -373,11 +381,12 @@ class DeadlinePinService : Service() {
         /** 锁屏副本里其它日程卡片的 ID 起始值。 */
         private const val LOCK_SCREEN_CARD_ID_BASE = 46990
 
-        /** 只有 vivo 系系统会过滤前台服务通知，其他系统照常直接显示常驻通知。 */
+        /**
+         * 旧版 OriginOS 会过滤前台服务通知，曾用普通通知副本绕过；新版系统会同时
+         * 展示原通知和副本，造成每条重复。统一使用系统前台通知以保证单条展示。
+         */
         private val needsLockScreenCopy: Boolean
-            get() = Build.MANUFACTURER.equals("vivo", ignoreCase = true) ||
-                Build.BRAND.equals("vivo", ignoreCase = true) ||
-                Build.BRAND.equals("iqoo", ignoreCase = true)
+            get() = false
         private const val CARD_ID_BASE = 47010
         private const val MAX_CARDS = 5
         private const val DEFAULT_MINUTES = 24 * 60L

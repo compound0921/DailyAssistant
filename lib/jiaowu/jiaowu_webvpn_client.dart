@@ -6,6 +6,7 @@ import 'package:html/parser.dart' as html_parser;
 
 import 'jiaowu_des.dart';
 import 'jiaowu_models.dart';
+import 'jiaowu_rsa.dart';
 
 /// 青岛科技大学 WebVPN 上的正方教务只读客户端。
 ///
@@ -107,17 +108,39 @@ class JiaowuWebvpnClient {
       );
     }
 
-    final post = await _send(
-      'POST',
-      form.action,
-      form: {
+    final fields = {...form.fields};
+    if (form.rsaPublicKeyUri != null) {
+      final keyResponse = await _send('GET', form.rsaPublicKeyUri!);
+      if (keyResponse.statusCode < 200 || keyResponse.statusCode >= 300) {
+        throw JiaowuException(
+          '统一身份认证公钥获取失败（HTTP ${keyResponse.statusCode}）。',
+          kind: JiaowuFailureKind.network,
+        );
+      }
+      try {
+        fields
+          ..['username'] = cleanAccount
+          ..['password'] =
+              '__RSA__${encryptCasPassword(cleanPassword, keyResponse.body)}';
+      } on FormatException catch (error) {
+        throw JiaowuException(
+          '统一身份认证公钥无法解析：${error.message}',
+          kind: JiaowuFailureKind.parse,
+        );
+      }
+    } else {
+      fields.addAll({
         'rsa': jiaowuEncryptLogin('$cleanAccount$cleanPassword${form.lt}'),
         'ul': '${cleanAccount.length}',
         'pl': '${cleanPassword.length}',
         'lt': form.lt,
-        'execution': form.execution,
-        '_eventId': form.eventId,
-      },
+      });
+    }
+
+    final post = await _send(
+      'POST',
+      form.action,
+      form: fields,
       referer: page.uri.toString(),
     );
 
@@ -139,10 +162,7 @@ class JiaowuWebvpnClient {
       await _verifyJiaowuAccess();
     } on JiaowuException catch (error) {
       if (message != null) {
-        throw JiaowuException(
-          message,
-          kind: JiaowuFailureKind.badCredentials,
-        );
+        throw JiaowuException(message, kind: JiaowuFailureKind.badCredentials);
       }
       throw _wrapAccessError(error);
     }
@@ -154,18 +174,14 @@ class JiaowuWebvpnClient {
   Future<String> fetchExamsPage() => _fetchPage(examUri, tableId: 'tabGrid');
 
   Future<String> fetchMessageQuery() {
-    return _postQuery(
-      Uri.parse('$baseUrl$messageQueryPath'),
-      {
-        'flag': '1',
-        'sfyy': '1',
-        'page': '1',
-        'rows': '50',
-        'sidx': 'cjsj',
-        'sord': 'desc',
-      },
-      referer: messageUri.toString(),
-    );
+    return _postQuery(Uri.parse('$baseUrl$messageQueryPath'), {
+      'flag': '1',
+      'sfyy': '1',
+      'page': '1',
+      'rows': '50',
+      'sidx': 'cjsj',
+      'sord': 'desc',
+    }, referer: messageUri.toString());
   }
 
   Future<String> fetchExamQuery(String examHtml) {
@@ -254,13 +270,9 @@ class JiaowuWebvpnClient {
       // 门户失败不直接中断，后面用 SSO/教务页结果判断。
     }
 
-    var response = await _send(
-      'GET',
-      _webvpnUri(Uri.parse(_zhengfangSsoUrl)),
-    );
+    var response = await _send('GET', _webvpnUri(Uri.parse(_zhengfangSsoUrl)));
     for (var attempt = 0; attempt < 3; attempt++) {
-      if (isLoginPage(response.body) ||
-          _isZhengfangLoginPage(response.body)) {
+      if (isLoginPage(response.body) || _isZhengfangLoginPage(response.body)) {
         break;
       }
       if (response.statusCode < 200 || response.statusCode >= 300) break;
@@ -500,10 +512,7 @@ class JiaowuWebvpnClient {
           ),
         );
       } catch (error) {
-        throw JiaowuException(
-          '网络请求失败：$error',
-          kind: JiaowuFailureKind.network,
-        );
+        throw JiaowuException('网络请求失败：$error', kind: JiaowuFailureKind.network);
       }
 
       _absorbCookies(response);
@@ -583,9 +592,11 @@ class JiaowuWebvpnClient {
 
   _LoginForm _parseLoginForm(String html, Uri pageUri) {
     final document = html_parser.parse(html);
-    final form =
+    final legacyForm =
         document.querySelector('form#loginForm') ??
         document.querySelector('form[action*="tpass/login"]');
+    final casForm = document.querySelector('form#fm1');
+    final form = legacyForm ?? casForm;
     final action = form?.attributes['action']?.trim();
     if (form == null || action == null || action.isEmpty) {
       throw const JiaowuException(
@@ -596,25 +607,40 @@ class JiaowuWebvpnClient {
 
     String? inputValue(String name) {
       final input =
-          document.querySelector('input[name="$name"]') ??
-          document.querySelector('#$name');
+          form.querySelector('input[name="$name"]') ??
+          form.querySelector('#$name');
       final value = input?.attributes['value']?.trim();
       return value == null || value.isEmpty ? null : value;
     }
 
+    final isCas = casForm != null && identical(form, casForm);
     final lt = inputValue('lt');
-    if (lt == null) {
+    if (!isCas && lt == null) {
       throw const JiaowuException(
         'WebVPN 登录表单缺少 lt，无法自动登录。',
         kind: JiaowuFailureKind.parse,
       );
     }
 
+    final fields = <String, String>{};
+    for (final input in form.querySelectorAll('input[name]')) {
+      final name = input.attributes['name']?.trim();
+      final type = input.attributes['type']?.toLowerCase();
+      if (name == null ||
+          name.isEmpty ||
+          type == 'submit' ||
+          type == 'checkbox') {
+        continue;
+      }
+      fields[name] = input.attributes['value'] ?? '';
+    }
+
     return _LoginForm(
-      action: pageUri.resolve(action),
-      lt: lt,
-      execution: inputValue('execution') ?? 'e1s1',
-      eventId: inputValue('_eventId') ?? 'submit',
+      // 新 CAS 的脚本会把 action 改成当前完整 URL，以保留 service 查询参数。
+      action: isCas ? pageUri.replace(fragment: '') : pageUri.resolve(action),
+      lt: lt ?? '',
+      fields: fields,
+      rsaPublicKeyUri: isCas ? pageUri.resolve('./jwt/publicKey') : null,
       hasCaptcha:
           document.querySelector('#div_image_code') != null ||
           document.querySelector('#captchacode') != null,
@@ -623,7 +649,12 @@ class JiaowuWebvpnClient {
 
   String? _parseLoginError(String html) {
     final document = html_parser.parse(html);
-    for (final selector in ['#errormsg', '#errormsghide']) {
+    for (final selector in [
+      '#errormsg',
+      '#errormsghide',
+      '#loginError1',
+      '.login-error',
+    ]) {
       final text = document.querySelector(selector)?.text.trim();
       if (text != null && text.isNotEmpty) return text;
     }
@@ -637,6 +668,9 @@ class JiaowuWebvpnClient {
 
   static bool isLoginPage(String html) {
     return html.contains('id="loginForm"') ||
+        (html.contains('id="fm1"') &&
+            html.contains('name="username"') &&
+            html.contains('name="password"')) ||
         (html.contains('id="un"') &&
             html.contains('id="pd"') &&
             html.contains('统一身份认证'));
@@ -647,15 +681,15 @@ class _LoginForm {
   const _LoginForm({
     required this.action,
     required this.lt,
-    required this.execution,
-    required this.eventId,
+    required this.fields,
+    required this.rsaPublicKeyUri,
     required this.hasCaptcha,
   });
 
   final Uri action;
   final String lt;
-  final String execution;
-  final String eventId;
+  final Map<String, String> fields;
+  final Uri? rsaPublicKeyUri;
   final bool hasCaptcha;
 }
 

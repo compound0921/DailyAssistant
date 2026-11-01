@@ -1,8 +1,10 @@
 import 'package:flutter_chaoxing/flutter_chaoxing.dart';
 
 import '../models/deadline.dart';
+import '../jiaowu/jiaowu_models.dart';
+import 'xuexitong_due_time.dart';
 
-/// 映射结果。没有截止时间或缺少标识的任务会被跳过并写入 [warnings]。
+/// 映射结果。缺少标题或稳定标识的任务会被跳过并写入 [warnings]。
 class XuexitongMappingResult {
   const XuexitongMappingResult({
     required this.deadlines,
@@ -22,6 +24,7 @@ class XuexitongMergeResult {
     required this.completed,
     required this.skipped,
     this.removed = 0,
+    this.exams = const [],
   });
 
   final List<Deadline> deadlines;
@@ -34,16 +37,17 @@ class XuexitongMergeResult {
 
   /// 本次清理掉的过期随堂练习数量。
   final int removed;
+  final List<JiaowuExam> exams;
 
   int get changedCount => added + updated + completed + removed;
 
-  bool get hasChanges => changedCount > 0;
+  bool get hasChanges => changedCount > 0 || exams.isNotEmpty;
 }
 
 /// 把学习通作业/考试/随堂练习映射为本地 Deadline。
 ///
 /// 规则：
-/// - 有截止时间、有稳定 ID 的任务才导入。
+/// - 有稳定 ID 的任务才导入；没有截止时间时作为无截止日程导入。
 /// - 平台标记已完成的任务也会映射，用于把已有本地条目标记为完成；
 ///   [mergeXuexitongDeadlines] 不会把纯历史任务新增进来。
 XuexitongMappingResult mapXuexitongTasks(
@@ -69,16 +73,17 @@ XuexitongMappingResult mapXuexitongTasks(
       continue;
     }
 
-    if (task.endTime.millisecondsSinceEpoch <= 0) {
-      warnings.add('「$title」没有截止时间，已跳过');
-      continue;
-    }
+    final dueAt = task.endTime.millisecondsSinceEpoch <= 0
+        ? null
+        : task.endTime;
 
     final completed = task.status > 0;
-    if (!completed && task.endTime.isBefore(current)) {
+    if (!completed && dueAt != null && dueAt.isBefore(current)) {
       // 已截止的任务不再导入；已完成任务保留，用于更新本地完成状态。
       continue;
     }
+
+    if (task.type == 'exam') continue;
 
     final note = switch (task.type) {
       'exam' => '学习通考试',
@@ -89,7 +94,7 @@ XuexitongMappingResult mapXuexitongTasks(
       Deadline(
         id: 'xxt:$externalId',
         title: title,
-        dueAt: task.endTime,
+        dueAt: dueAt,
         courseName: task.courseName.trim().isEmpty
             ? null
             : task.courseName.trim(),
@@ -117,9 +122,16 @@ XuexitongMergeResult mergeXuexitongDeadlines({
   required List<Deadline> incoming,
   Set<String> reconciledCourseNames = const <String>{},
   DateTime? now,
+  List<JiaowuExam> exams = const [],
 }) {
   final current = now ?? DateTime.now();
   final result = [...existing];
+  // 考试现在统一进入“考试安排”，清理旧版本曾写入日程的学习通考试。
+  final beforeExamCleanup = result.length;
+  result.removeWhere(
+    (item) => item.source == DeadlineSource.xuexitong && item.note == '学习通考试',
+  );
+  final removedExamDeadlines = beforeExamCleanup - result.length;
   final incomingKeys = <String>{
     for (final item in incoming)
       if (item.externalId != null) '${item.source.name}:${item.externalId}',
@@ -145,7 +157,7 @@ XuexitongMergeResult mergeXuexitongDeadlines({
     final due = item.dueAt;
     return due == null || !due.isAfter(current);
   });
-  final removed = beforePrune - result.length;
+  final removed = removedExamDeadlines + beforePrune - result.length;
 
   final indexByKey = <String, int>{};
 
@@ -184,6 +196,7 @@ XuexitongMergeResult mergeXuexitongDeadlines({
     final merged = old.copyWith(
       title: item.title,
       dueAt: item.dueAt,
+      clearDue: item.dueAt == null,
       courseName: item.courseName,
       clearCourse: item.courseName == null,
       note: item.note,
@@ -204,7 +217,43 @@ XuexitongMergeResult mergeXuexitongDeadlines({
     completed: completed,
     skipped: skipped,
     removed: removed,
+    exams: exams,
   );
+}
+
+List<JiaowuExam> mapXuexitongExams(
+  Iterable<ChaoxingTaskItem> tasks, {
+  DateTime? now,
+}) {
+  final current = now ?? DateTime.now();
+  final result = <JiaowuExam>[];
+  for (final task in tasks) {
+    if (task.type != 'exam' || task.id.trim().isEmpty) continue;
+    final start = task.openTime.millisecondsSinceEpoch > 0
+        ? task.openTime
+        : parseXuexitongExamStartTime(task.title, now: current);
+    final resolvedStart = start;
+    if (resolvedStart == null) continue;
+    final end = task.endTime.millisecondsSinceEpoch > 0
+        ? task.endTime
+        : resolvedStart.add(const Duration(hours: 2));
+    result.add(
+      JiaowuExam(
+        externalId: 'xuexitong:${task.id.trim()}',
+        courseName: task.courseName.trim().isEmpty
+            ? task.title
+            : task.courseName.trim(),
+        startAt: resolvedStart,
+        endAt: end.isAfter(resolvedStart)
+            ? end
+            : resolvedStart.add(const Duration(hours: 2)),
+        examName: task.title,
+        examType: '学习通考试',
+        note: '学习通同步',
+      ),
+    );
+  }
+  return result;
 }
 
 bool _changed(Deadline before, Deadline after) {

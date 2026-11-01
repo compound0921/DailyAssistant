@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 一门课的随堂练习检索记录。
 ///
 /// `lastActivityAt` 是已知的最近一次活动开始时间；从未看到活动时退回
-/// `firstCheckedAt`。两者都超过 6 个月就不再请求该课程。
+/// `firstCheckedAt`。同步现在每次都扫描全部课程，这里的时间只作记录。
 class XuexitongCourseActivity {
   const XuexitongCourseActivity({
     required this.firstCheckedAt,

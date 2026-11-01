@@ -28,6 +28,10 @@ List<JiaowuExam> mergeJiaowuExams({
   }
 
   for (final local in previous) {
+    if (local.externalId.startsWith('xuexitong:')) {
+      if (!fetchedIds.contains(local.externalId)) merged.add(local);
+      continue;
+    }
     if (!local.edited && !local.manual) continue;
     if (fetchedIds.contains(local.externalId)) continue;
     merged.add(local);

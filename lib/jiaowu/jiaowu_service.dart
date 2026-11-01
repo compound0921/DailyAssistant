@@ -33,6 +33,28 @@ class JiaowuService {
 
   Future<JiaowuSnapshot?> loadSnapshot() => _snapshotStore.load();
 
+  /// 合并学习通考试到统一的“考试安排”快照。
+  ///
+  /// 还没同步过正方教务时也要能单独保存学习通考试，不能因为没有快照就丢弃。
+  Future<JiaowuSnapshot?> mergeXuexitongExams(List<JiaowuExam> incoming) async {
+    var snapshot = await _snapshotStore.load();
+    if (snapshot == null) {
+      if (incoming.isEmpty) return null;
+      snapshot = JiaowuSnapshot(fetchedAt: DateTime.now());
+    }
+    final byId = <String, JiaowuExam>{
+      for (final exam in snapshot.exams) exam.externalId: exam,
+    };
+    byId.removeWhere((id, _) => id.startsWith('xuexitong:'));
+    for (final exam in incoming) {
+      final old = byId[exam.externalId];
+      byId[exam.externalId] = old?.edited == true
+          ? old!.withOriginal(exam)
+          : exam;
+    }
+    return _saveSortedExams(snapshot, byId.values.toList());
+  }
+
   /// 保存用户对单场考试的本地编辑。
   Future<JiaowuSnapshot?> saveExamEdit(JiaowuExam exam) async {
     final snapshot = await _snapshotStore.load();

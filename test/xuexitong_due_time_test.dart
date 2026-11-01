@@ -34,6 +34,20 @@ void main() {
       );
     });
 
+    test('uses end of full-date 作答时间 range', () {
+      expect(
+        parseXuexitongDueTime('作答时间：2026-11-01 08:00 至 2026-11-15 23:59'),
+        DateTime(2026, 11, 15, 23, 59),
+      );
+    });
+
+    test('supports full-date 开放时间 range without time', () {
+      expect(
+        parseXuexitongDueTime('开放时间：2026-11-01 至 2026-11-15'),
+        DateTime(2026, 11, 15, 23, 59),
+      );
+    });
+
     test('parses the end of an exam time range', () {
       expect(
         parseXuexitongDueTime('考试时间：2026-11-02 09:00-11:00'),
@@ -43,6 +57,26 @@ void main() {
 
     test('returns null when only the publish time is present', () {
       expect(parseXuexitongDueTime('发布时间：2026-10-20 08:00'), isNull);
+    });
+  });
+
+  group('parseXuexitongExamStartTime', () {
+    test('takes the start of a full-date range', () {
+      expect(
+        parseXuexitongExamStartTime('考试时间：2026-11-02 09:00-11:00'),
+        DateTime(2026, 11, 2, 9),
+      );
+    });
+
+    test('parses short-date ranges without a year', () {
+      final now = DateTime(2026, 11, 1);
+      expect(
+        parseXuexitongExamStartTime(
+          '考试时间：11-20 00:00 至 11-30 23:55',
+          now: now,
+        ),
+        DateTime(2026, 11, 20),
+      );
     });
   });
 

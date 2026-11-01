@@ -325,6 +325,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ---------- 学习通 ----------
 
   Future<bool> _commitXuexitong(XuexitongMergeResult result) async {
+    if (result.exams.isNotEmpty) {
+      final snapshot = await _jiaowuService.mergeXuexitongExams(result.exams);
+      if (snapshot != null && mounted) {
+        setState(() => _jiaowuExams = snapshot.exams);
+      }
+    }
     if (!result.hasChanges) return true;
     final saved = await _persistDeadlines(result.deadlines);
     if (saved) _showMessage(_xuexitongSummary(result), sync: true);
@@ -356,11 +362,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       final result = await _xuexitongService.fetchTasks();
       final mapping = mapXuexitongTasks(result.tasks);
+      final exams = mapXuexitongExams(result.tasks);
       final merged = mergeXuexitongDeadlines(
         existing: _deadlines,
         incoming: mapping.deadlines,
         reconciledCourseNames: result.reconciledCourseNames,
+        exams: exams,
       );
+      final examSnapshot = await _jiaowuService.mergeXuexitongExams(
+        merged.exams,
+      );
+      if (examSnapshot != null && mounted) {
+        setState(() => _jiaowuExams = examSnapshot.exams);
+      }
       if (!merged.hasChanges) {
         if (report) _showMessage('学习通已是最新', sync: true);
         return;
@@ -601,9 +615,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _createDeadline() async {
     final created = await Navigator.of(context).push<Deadline>(
       MaterialPageRoute(
-        builder: (_) => DeadlineEditPage(
-          tagOptions: _deadlineTags,
-        ),
+        builder: (_) => DeadlineEditPage(tagOptions: _deadlineTags),
       ),
     );
     if (created == null || !mounted) return;
@@ -644,10 +656,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _editDeadline(Deadline deadline) async {
     final updated = await Navigator.of(context).push<Deadline>(
       MaterialPageRoute(
-        builder: (_) => DeadlineEditPage(
-          initial: deadline,
-          tagOptions: _deadlineTags,
-        ),
+        builder: (_) =>
+            DeadlineEditPage(initial: deadline, tagOptions: _deadlineTags),
       ),
     );
     if (updated == null || !mounted) return;
@@ -761,10 +771,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final next = [
       for (final deadline in _deadlines)
         if (indexById.containsKey(deadline.id))
-          deadline.copyWith(
-            sortIndex: indexById[deadline.id],
-            updatedAt: now,
-          )
+          deadline.copyWith(sortIndex: indexById[deadline.id], updatedAt: now)
         else
           deadline,
     ];
@@ -836,10 +843,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }) async {
     final list = deadlines ?? _deadlines;
     if (!_deadlineReminderEnabled) {
-      await _notifications.syncAll(
-        const [],
-        previous: previous ?? list,
-      );
+      await _notifications.syncAll(const [], previous: previous ?? list);
       return;
     }
     await _notifications.ensurePermission(list);
@@ -2167,7 +2171,9 @@ class _HomeDeadlinePreviewState extends State<_HomeDeadlinePreview> {
                             selected: _selectedIds.contains(items[index].id),
                             onTap: () => setState(() {
                               final id = items[index].id;
-                              if (!_selectedIds.remove(id)) _selectedIds.add(id);
+                              if (!_selectedIds.remove(id)) {
+                                _selectedIds.add(id);
+                              }
                             }),
                           )
                         else
@@ -2254,8 +2260,7 @@ class _HomeDeadlineRow extends StatelessWidget {
         ),
         child: Row(
           children: [
-            if (selecting)
-              Checkbox(value: selected, onChanged: (_) => onTap()),
+            if (selecting) Checkbox(value: selected, onChanged: (_) => onTap()),
             Container(
               width: 4,
               height: 38,
@@ -2409,9 +2414,7 @@ class _HomeExamPreviewState extends State<_HomeExamPreview> {
             if (_selecting) ...[
               IconButton(
                 tooltip: '添加到日程',
-                onPressed: _selectedIds.isEmpty
-                    ? null
-                    : _addSelectedToSchedule,
+                onPressed: _selectedIds.isEmpty ? null : _addSelectedToSchedule,
                 icon: const Icon(Icons.event_available, size: 20),
               ),
               IconButton(
@@ -2564,7 +2567,9 @@ class _HomeExamRow extends StatelessWidget {
     final urgencyTextColor = _examUrgencyTextColor(urgency, theme);
     final ongoing = urgency == _ExamUrgency.ongoing;
     final expired = urgency == _ExamUrgency.expired;
-    final remaining = ongoing ? '进行中' : formatRemaining(exam.startAt, now: now);
+    final remaining = ongoing
+        ? '进行中 · ${formatDueMoment(exam.endAt, now: now)}'
+        : formatRemaining(exam.startAt, now: now);
     final details = [
       exam.location,
       exam.campus,
@@ -2583,11 +2588,7 @@ class _HomeExamRow extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (selecting)
-              Checkbox(
-                value: selected,
-                onChanged: (_) => onTap(),
-              ),
+            if (selecting) Checkbox(value: selected, onChanged: (_) => onTap()),
             SizedBox(
               width: 50,
               child: Column(
@@ -2765,8 +2766,7 @@ class _HomeYuketangPreviewState extends State<_HomeYuketangPreview> {
     final experiments = widget.experiments;
     final coursewares = widget.coursewares;
     final now = widget.now;
-    final stale =
-        now.difference(widget.fetchedAt) > const Duration(hours: 1);
+    final stale = now.difference(widget.fetchedAt) > const Duration(hours: 1);
     final candidates = _candidates(now);
     final liveIds = [
       for (final lesson in liveLessons)
@@ -2811,9 +2811,7 @@ class _HomeYuketangPreviewState extends State<_HomeYuketangPreview> {
               ),
               IconButton(
                 tooltip: '添加到日程',
-                onPressed: _selectedIds.isEmpty
-                    ? null
-                    : _addSelectedToSchedule,
+                onPressed: _selectedIds.isEmpty ? null : _addSelectedToSchedule,
                 icon: const Icon(Icons.event_available, size: 20),
               ),
               IconButton(
@@ -2981,8 +2979,7 @@ class _HomeYuketangLiveRow extends StatelessWidget {
         ),
         child: Row(
           children: [
-            if (selecting)
-              Checkbox(value: selected, onChanged: (_) => onTap()),
+            if (selecting) Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(Icons.podcasts, size: 20, color: theme.colorScheme.error),
             const SizedBox(width: AppSpacing.md),
             Expanded(
@@ -3055,8 +3052,7 @@ class _HomeYuketangHomeworkRow extends StatelessWidget {
         ),
         child: Row(
           children: [
-            if (selecting)
-              Checkbox(value: selected, onChanged: (_) => onTap()),
+            if (selecting) Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(
               Icons.assignment_outlined,
               size: 20,
@@ -3127,8 +3123,7 @@ class _HomeYuketangExperimentRow extends StatelessWidget {
         ),
         child: Row(
           children: [
-            if (selecting)
-              Checkbox(value: selected, onChanged: (_) => onTap()),
+            if (selecting) Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(
               Icons.science_outlined,
               size: 20,
@@ -3202,8 +3197,7 @@ class _HomeYuketangCoursewareRow extends StatelessWidget {
         ),
         child: Row(
           children: [
-            if (selecting)
-              Checkbox(value: selected, onChanged: (_) => onTap()),
+            if (selecting) Checkbox(value: selected, onChanged: (_) => onTap()),
             Icon(
               Icons.description_outlined,
               size: 20,
@@ -3295,7 +3289,8 @@ Color _examUrgencyColor(_ExamUrgency urgency, ThemeData theme) {
     _ExamUrgency.ongoing || _ExamUrgency.today => theme.colorScheme.error,
     _ExamUrgency.soon => deadlineUrgencyColor(DeadlineUrgency.soon, theme),
     _ExamUrgency.week => deadlineUrgencyColor(DeadlineUrgency.today, theme),
-    _ExamUrgency.later => theme.colorScheme.primary,
+    // 「更远」与文字共用「7 天内」的配色来源，自定义颜色时竖线一起变。
+    _ExamUrgency.later => deadlineUrgencyColor(DeadlineUrgency.week, theme),
     _ExamUrgency.expired => theme.colorScheme.onSurfaceVariant,
   };
 }

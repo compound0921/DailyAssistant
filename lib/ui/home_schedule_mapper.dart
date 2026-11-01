@@ -22,7 +22,8 @@ Deadline deadlineFromExam(JiaowuExam exam, {DateTime? now}) {
   return Deadline(
     id: 'jiaowu-exam:$externalId',
     title: exam.courseName,
-    dueAt: exam.startAt,
+    // 日程以截止时间为主：考试结束时间才是提醒和排序的依据。
+    dueAt: exam.endAt,
     courseName: exam.courseName,
     note: note.isEmpty ? '考试安排' : note,
     createdAt: current,

@@ -6,7 +6,7 @@ DateTime? parseXuexitongDueTime(String text, {DateTime? now}) {
   if (value.isEmpty) return null;
 
   final hint = RegExp(
-    r'截止|结束|到期|deadline|至|考试时间',
+    r'截止|结束|到期|deadline|至|考试时间|作答时间|作业时间|答题时间|开放时间|提交时间',
     caseSensitive: false,
   ).firstMatch(value);
   if (hint == null) return null;
@@ -15,10 +15,11 @@ DateTime? parseXuexitongDueTime(String text, {DateTime? now}) {
   final current = now ?? DateTime.now();
 
   // 2026-10-30 23:59 / 2026年10月30日 23:59 / 考试时间 09:00-11:00
-  final full = RegExp(
+  final fullMatches = RegExp(
     r'(20\d{2})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})\s*日?[^\d]{0,8}'
     r'(\d{1,2})\s*[:：]\s*(\d{2})',
-  ).firstMatch(tail);
+  ).allMatches(tail).toList();
+  final full = fullMatches.isEmpty ? null : fullMatches.last;
   if (full != null) {
     var hour = int.parse(full.group(4)!);
     var minute = int.parse(full.group(5)!);
@@ -39,9 +40,10 @@ DateTime? parseXuexitongDueTime(String text, {DateTime? now}) {
   }
 
   // 2026-10-30
-  final dateOnly = RegExp(
+  final dateOnlyMatches = RegExp(
     r'(20\d{2})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})',
-  ).firstMatch(tail);
+  ).allMatches(tail).toList();
+  final dateOnly = dateOnlyMatches.isEmpty ? null : dateOnlyMatches.last;
   if (dateOnly != null) {
     return _buildDate(
       int.parse(dateOnly.group(1)!),
@@ -67,6 +69,58 @@ DateTime? parseXuexitongDueTime(String text, {DateTime? now}) {
   }
 
   // 10-30 23:59（作业详情页“作答时间: 10-20 08:00 至 10-30 23:59”）
+  // 有区间时取最后一个时间，即结束时间。
+  final shortDateMatches = RegExp(
+    r'(\d{1,2})\s*[-/]\s*(\d{1,2})\s*[^\d]{0,8}(\d{1,2})\s*[:：]\s*(\d{2})',
+  ).allMatches(tail).toList();
+  final shortDate = shortDateMatches.isEmpty ? null : shortDateMatches.last;
+  if (shortDate != null) {
+    return _buildDateWithYearFallback(
+      current,
+      int.parse(shortDate.group(1)!),
+      int.parse(shortDate.group(2)!),
+      int.parse(shortDate.group(3)!),
+      int.parse(shortDate.group(4)!),
+    );
+  }
+
+  return null;
+}
+
+DateTime? parseXuexitongExamStartTime(String text, {DateTime? now}) {
+  final value = text.trim();
+  final current = now ?? DateTime.now();
+  final hint = RegExp(
+    r'考试时间|考试|开始时间|start\s*time|时间',
+    caseSensitive: false,
+  ).firstMatch(value);
+  final tail = hint == null ? value : value.substring(hint.start);
+  final full = RegExp(
+    r'(20\d{2})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})\s*日?[^\d]{0,8}'
+    r'(\d{1,2})\s*[:：]\s*(\d{2})',
+  ).firstMatch(tail);
+  if (full != null) {
+    return _buildDate(
+      int.parse(full.group(1)!),
+      int.parse(full.group(2)!),
+      int.parse(full.group(3)!),
+      int.parse(full.group(4)!),
+      int.parse(full.group(5)!),
+    );
+  }
+  final monthDay = RegExp(
+    r'(\d{1,2})\s*月\s*(\d{1,2})\s*日?[^\d]{0,8}(\d{1,2})\s*[:：]\s*(\d{2})',
+  ).firstMatch(tail);
+  if (monthDay != null) {
+    return _buildDateWithYearFallback(
+      current,
+      int.parse(monthDay.group(1)!),
+      int.parse(monthDay.group(2)!),
+      int.parse(monthDay.group(3)!),
+      int.parse(monthDay.group(4)!),
+    );
+  }
+  // 11-20 00:00 至 11-30 23:55：区间取第一个时间作为开始。
   final shortDate = RegExp(
     r'(\d{1,2})\s*[-/]\s*(\d{1,2})\s*[^\d]{0,8}(\d{1,2})\s*[:：]\s*(\d{2})',
   ).firstMatch(tail);
@@ -79,7 +133,6 @@ DateTime? parseXuexitongDueTime(String text, {DateTime? now}) {
       int.parse(shortDate.group(4)!),
     );
   }
-
   return null;
 }
 

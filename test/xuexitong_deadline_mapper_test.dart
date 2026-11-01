@@ -11,6 +11,7 @@ ChaoxingTaskItem task({
   int status = 0,
   DateTime? endTime,
   String doTaskUrl = '',
+  DateTime? openTime,
 }) {
   return ChaoxingTaskItem(
     id: id,
@@ -18,7 +19,7 @@ ChaoxingTaskItem task({
     courseName: courseName,
     type: type,
     status: status,
-    openTime: DateTime(2026, 10, 1),
+    openTime: openTime ?? DateTime(2026, 10, 1),
     endTime: endTime ?? DateTime(2026, 10, 30, 23, 59),
     doTaskUrl: doTaskUrl,
   );
@@ -64,20 +65,31 @@ void main() {
         ),
       ], now: DateTime(2026, 10, 25));
 
-      expect(result.deadlines, hasLength(2));
+      expect(result.deadlines, hasLength(1));
       expect(result.deadlines.first.id, 'xxt:1001');
       expect(result.deadlines.first.source, DeadlineSource.xuexitong);
       expect(result.deadlines.first.externalId, '1001');
       expect(result.deadlines.first.note, '学习通作业');
       expect(result.deadlines.first.courseName, '高等数学');
-      expect(result.deadlines.last.note, '学习通考试');
+      final exams = mapXuexitongExams([
+        task(
+          id: '1002',
+          title: '期中考试',
+          courseName: '大学英语',
+          type: 'exam',
+          openTime: DateTime(2026, 11, 2, 9),
+          endTime: DateTime(2026, 11, 2, 11),
+        ),
+      ]);
+      expect(exams.single.startAt, DateTime(2026, 11, 2, 9));
+      expect(exams.single.endAt, DateTime(2026, 11, 2, 11));
       expect(result.warnings, isEmpty);
     });
 
     test('labels practice activities', () {
       final result = mapXuexitongTasks([
         task(id: '6001', title: '随堂练习', type: 'activity'),
-      ]);
+      ], now: DateTime(2026, 10, 25));
 
       expect(result.deadlines.single.note, '学习通随堂练习');
     });
@@ -99,7 +111,7 @@ void main() {
       expect(result.deadlines.single.completed, isTrue);
     });
 
-    test('skips tasks without title, id, or due time', () {
+    test('imports tasks without due time and skips invalid identity', () {
       final result = mapXuexitongTasks([
         task(id: '1', title: '   '),
         task(id: '', title: '没有 ID', doTaskUrl: ''),
@@ -110,12 +122,38 @@ void main() {
         ),
       ], now: DateTime(2026, 10, 25));
 
-      expect(result.deadlines, isEmpty);
-      expect(result.warnings, hasLength(3));
+      expect(result.deadlines, hasLength(1));
+      expect(result.deadlines.single.title, '没有截止时间');
+      expect(result.deadlines.single.dueAt, isNull);
+      expect(result.warnings, hasLength(2));
     });
   });
 
   group('mergeXuexitongDeadlines', () {
+    test('clears a previously known due time when the platform removes it', () {
+      final existing = synced(
+        externalId: 'no-due',
+        title: '长期任务',
+        dueAt: DateTime(2026, 11, 20),
+      );
+      final incoming = mapXuexitongTasks([
+        task(
+          id: 'no-due',
+          title: '长期任务',
+          endTime: DateTime.fromMillisecondsSinceEpoch(0),
+        ),
+      ]).deadlines;
+
+      final result = mergeXuexitongDeadlines(
+        existing: [existing],
+        incoming: incoming,
+        now: DateTime(2026, 10, 25),
+      );
+
+      expect(result.deadlines.single.dueAt, isNull);
+      expect(result.updated, 1);
+    });
+
     test('adds new pending tasks and leaves manual deadlines untouched', () {
       final manual = Deadline(
         id: 'manual-1',
@@ -126,7 +164,7 @@ void main() {
       );
       final incoming = mapXuexitongTasks([
         task(id: '2001', title: '学习通作业'),
-      ]).deadlines;
+      ], now: DateTime(2026, 10, 25)).deadlines;
 
       final result = mergeXuexitongDeadlines(
         existing: [manual],

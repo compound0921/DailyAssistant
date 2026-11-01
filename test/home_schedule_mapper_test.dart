@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final now = DateTime(2026, 10, 29, 9);
 
-  test('考试映射为手动日程，截止时间为开考时间', () {
+  test('考试映射为手动日程，截止时间为考试结束时间', () {
     final exam = JiaowuExam(
       externalId: 'exam-1',
       courseName: '高等数学',
@@ -21,7 +21,7 @@ void main() {
 
     expect(deadline.id, 'jiaowu-exam:exam-1');
     expect(deadline.title, '高等数学');
-    expect(deadline.dueAt, DateTime(2026, 11, 5, 8, 30));
+    expect(deadline.dueAt, DateTime(2026, 11, 5, 10, 30));
     expect(deadline.courseName, '高等数学');
     expect(deadline.source, DeadlineSource.manual);
     expect(deadline.note, contains('考试安排'));

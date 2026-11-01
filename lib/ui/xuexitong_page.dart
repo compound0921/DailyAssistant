@@ -166,10 +166,12 @@ class _XuexitongPageState extends State<XuexitongPage> {
     try {
       final result = await _service.fetchTasks();
       final mapping = mapXuexitongTasks(result.tasks);
+      final exams = mapXuexitongExams(result.tasks);
       final merged = mergeXuexitongDeadlines(
         existing: _existingDeadlines,
         incoming: mapping.deadlines,
         reconciledCourseNames: result.reconciledCourseNames,
+        exams: exams,
       );
       final state = await _service.loadStoredState();
       if (!mounted) return;

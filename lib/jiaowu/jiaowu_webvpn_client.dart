@@ -18,8 +18,9 @@ class JiaowuWebvpnClient {
           dio ??
           Dio(
             BaseOptions(
-              connectTimeout: const Duration(seconds: 15),
-              receiveTimeout: const Duration(seconds: 20),
+              // WebVPN 在移动网络下握手较慢，15 秒容易误判超时。
+              connectTimeout: const Duration(seconds: 30),
+              receiveTimeout: const Duration(seconds: 30),
               followRedirects: false,
               validateStatus: (status) => status != null && status < 500,
             ),
@@ -29,6 +30,7 @@ class JiaowuWebvpnClient {
   static const String baseUrl = 'https://wvpn.qust.edu.cn';
   static const String loginEntryUrl = '$baseUrl/login?cas_login=true';
 
+  // 新版 `数智青科` 门户只是入口，教务仍走旧的 HTTP 主机前缀。
   static const String _jwglxtHostPrefix =
       'http/77726476706e69737468656265737421fae046903f2426416b1b9de29d51367bb4e3';
   static const String _portalHostPrefix =
@@ -295,6 +297,8 @@ class JiaowuWebvpnClient {
         kind: JiaowuFailureKind.loginRequired,
       );
     }
+    // 新版教务取消了 `/sso/driotlogin`，直接继续尝试消息/考试页。
+    if (response.statusCode == 404) return;
     if (response.statusCode < 200 || response.statusCode >= 400) {
       throw JiaowuException(
         '正方 SSO 返回 HTTP ${response.statusCode}。',
@@ -481,38 +485,52 @@ class JiaowuWebvpnClient {
     var currentReferer = referer;
 
     for (var hop = 0; hop < 12; hop++) {
-      final Response<String> response;
-      try {
-        response = await _dio.request<String>(
-          currentUri.toString(),
-          data: currentForm,
-          options: Options(
-            method: currentMethod,
-            headers: {
-              'User-Agent': _browserUserAgent,
-              'Accept': ajax
-                  ? 'application/json, text/javascript, */*; q=0.01'
-                  : 'text/html,application/xhtml+xml,application/xml;q=0.9,'
-                        'image/avif,image/webp,*/*;q=0.8',
-              'Accept-Language': 'zh-CN,zh;q=0.9',
-              'Origin': baseUrl,
-              if (ajax) 'X-Requested-With': 'XMLHttpRequest',
-              if (_cookies.isNotEmpty)
-                'Cookie': _cookies.entries
-                    .map((entry) => '${entry.key}=${entry.value}')
-                    .join('; '),
-              'Referer': currentReferer ?? '$baseUrl/',
-            },
-            contentType: currentForm == null
-                ? null
-                : Headers.formUrlEncodedContentType,
-            responseType: ResponseType.plain,
-            followRedirects: false,
-            validateStatus: (status) => status != null && status < 500,
-          ),
-        );
-      } catch (error) {
-        throw JiaowuException('网络请求失败：$error', kind: JiaowuFailureKind.network);
+      Response<String>? response;
+      Object? failure;
+      // 移动网络下 WebVPN 偶发握手超时，重试一次再报错。
+      for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+          response = await _dio.request<String>(
+            currentUri.toString(),
+            data: currentForm,
+            options: Options(
+              method: currentMethod,
+              headers: {
+                'User-Agent': _browserUserAgent,
+                'Accept': ajax
+                    ? 'application/json, text/javascript, */*; q=0.01'
+                    : 'text/html,application/xhtml+xml,application/xml;q=0.9,'
+                          'image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9',
+                'Origin': baseUrl,
+                if (ajax) 'X-Requested-With': 'XMLHttpRequest',
+                if (_cookies.isNotEmpty)
+                  'Cookie': _cookies.entries
+                      .map((entry) => '${entry.key}=${entry.value}')
+                      .join('; '),
+                'Referer': currentReferer ?? '$baseUrl/',
+              },
+              contentType: currentForm == null
+                  ? null
+                  : Headers.formUrlEncodedContentType,
+              responseType: ResponseType.plain,
+              followRedirects: false,
+              validateStatus: (status) => status != null && status < 500,
+            ),
+          );
+          failure = null;
+          break;
+        } catch (error) {
+          failure = error;
+          if (attempt == 0 && _isTransientNetworkError(error)) {
+            await Future<void>.delayed(const Duration(milliseconds: 500));
+            continue;
+          }
+          break;
+        }
+      }
+      if (response == null) {
+        throw _networkException(failure);
       }
 
       _absorbCookies(response);
@@ -551,6 +569,38 @@ class JiaowuWebvpnClient {
 
     throw const JiaowuException(
       'WebVPN 重定向次数过多。',
+      kind: JiaowuFailureKind.network,
+    );
+  }
+
+  bool _isTransientNetworkError(Object error) {
+    return error is DioException &&
+        (error.type == DioExceptionType.connectionTimeout ||
+            error.type == DioExceptionType.receiveTimeout ||
+            error.type == DioExceptionType.connectionError);
+  }
+
+  JiaowuException _networkException(Object? error) {
+    if (error is DioException) {
+      return switch (error.type) {
+        DioExceptionType.connectionTimeout ||
+        DioExceptionType.sendTimeout ||
+        DioExceptionType.receiveTimeout => const JiaowuException(
+          '连接教务服务器超时，请检查网络或稍后重试。',
+          kind: JiaowuFailureKind.network,
+        ),
+        DioExceptionType.connectionError => const JiaowuException(
+          '无法连接教务服务器，请检查网络或 VPN。',
+          kind: JiaowuFailureKind.network,
+        ),
+        _ => JiaowuException(
+          '网络请求失败：${error.message ?? error}',
+          kind: JiaowuFailureKind.network,
+        ),
+      };
+    }
+    return JiaowuException(
+      '网络请求失败：$error',
       kind: JiaowuFailureKind.network,
     );
   }

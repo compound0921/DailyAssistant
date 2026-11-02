@@ -366,6 +366,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final merged = mergeXuexitongDeadlines(
         existing: _deadlines,
         incoming: mapping.deadlines,
+        excludedExternalIds: mapping.excludedExternalIds,
         reconciledCourseNames: result.reconciledCourseNames,
         exams: exams,
       );

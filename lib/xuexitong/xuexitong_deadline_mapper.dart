@@ -9,10 +9,12 @@ class XuexitongMappingResult {
   const XuexitongMappingResult({
     required this.deadlines,
     this.warnings = const [],
+    this.excludedExternalIds = const {},
   });
 
   final List<Deadline> deadlines;
   final List<String> warnings;
+  final Set<String> excludedExternalIds;
 }
 
 /// 合并结果。只统计本次真正变化的内容，便于界面显示同步摘要。
@@ -35,7 +37,7 @@ class XuexitongMergeResult {
   /// 平台上已完成、但本地从未导入过的历史任务数量。
   final int skipped;
 
-  /// 本次清理掉的过期随堂练习数量。
+  /// 本次清理掉的已提交、已截止或失效的学习通条目数量。
   final int removed;
   final List<JiaowuExam> exams;
 
@@ -48,8 +50,7 @@ class XuexitongMergeResult {
 ///
 /// 规则：
 /// - 有稳定 ID 的任务才导入；没有截止时间时作为无截止日程导入。
-/// - 平台标记已完成的任务也会映射，用于把已有本地条目标记为完成；
-///   [mergeXuexitongDeadlines] 不会把纯历史任务新增进来。
+/// - 已提交、已截止的任务只记录标识，用于清理本地旧条目。
 XuexitongMappingResult mapXuexitongTasks(
   Iterable<ChaoxingTaskItem> tasks, {
   DateTime? now,
@@ -57,6 +58,7 @@ XuexitongMappingResult mapXuexitongTasks(
   final current = now ?? DateTime.now();
   final mapped = <Deadline>[];
   final warnings = <String>[];
+  final excluded = <String>{};
 
   for (final task in tasks) {
     final title = task.title.trim();
@@ -77,9 +79,8 @@ XuexitongMappingResult mapXuexitongTasks(
         ? null
         : task.endTime;
 
-    final completed = task.status > 0;
-    if (!completed && dueAt != null && dueAt.isBefore(current)) {
-      // 已截止的任务不再导入；已完成任务保留，用于更新本地完成状态。
+    if (task.status != 0 || (dueAt != null && !dueAt.isAfter(current))) {
+      excluded.add(externalId);
       continue;
     }
 
@@ -99,7 +100,7 @@ XuexitongMappingResult mapXuexitongTasks(
             ? null
             : task.courseName.trim(),
         note: note,
-        completed: completed,
+        completed: false,
         createdAt: current,
         updatedAt: current,
         source: DeadlineSource.xuexitong,
@@ -108,7 +109,11 @@ XuexitongMappingResult mapXuexitongTasks(
     );
   }
 
-  return XuexitongMappingResult(deadlines: mapped, warnings: warnings);
+  return XuexitongMappingResult(
+    deadlines: mapped,
+    warnings: warnings,
+    excludedExternalIds: excluded,
+  );
 }
 
 /// 按 `source + externalId` 合并学习通任务与本地 Deadline。
@@ -116,16 +121,18 @@ XuexitongMappingResult mapXuexitongTasks(
 /// - 手动条目完全不动。
 /// - 已存在的学习通条目更新标题、截止时间、课程和备注。
 /// - 本地手动勾选的完成状态不会被平台未完成状态覆盖。
-/// - 平台已完成且本地不存在的历史任务不新增。
+/// - 平台已提交、已截止的任务清理本地旧条目。
 XuexitongMergeResult mergeXuexitongDeadlines({
   required List<Deadline> existing,
   required List<Deadline> incoming,
   Set<String> reconciledCourseNames = const <String>{},
+  Set<String> excludedExternalIds = const <String>{},
   DateTime? now,
   List<JiaowuExam> exams = const [],
 }) {
   final current = now ?? DateTime.now();
   final result = [...existing];
+  final excludedKeys = excludedExternalIds.map(_taskIdentity).toSet();
   // 考试现在统一进入“考试安排”，清理旧版本曾写入日程的学习通考试。
   final beforeExamCleanup = result.length;
   result.removeWhere(
@@ -134,7 +141,8 @@ XuexitongMergeResult mergeXuexitongDeadlines({
   final removedExamDeadlines = beforeExamCleanup - result.length;
   final incomingKeys = <String>{
     for (final item in incoming)
-      if (item.externalId != null) '${item.source.name}:${item.externalId}',
+      if (item.externalId != null)
+        '${item.source.name}:${_taskIdentity(item.externalId!)}',
   };
 
   // 成功检查过的课程以本次活动列表为准：不在列表里的随堂练习直接清理。
@@ -142,19 +150,22 @@ XuexitongMergeResult mergeXuexitongDeadlines({
   final beforePrune = result.length;
   result.removeWhere((item) {
     if (item.source != DeadlineSource.xuexitong) return false;
-    if (item.completed) return false;
     final externalId = item.externalId;
+    if (externalId != null && excludedKeys.contains(_taskIdentity(externalId))) {
+      return true;
+    }
+    final key = '${item.source.name}:${_taskIdentity(externalId ?? '')}';
+    if (incomingKeys.contains(key)) return false;
+    if (item.completed) return true;
+    final due = item.dueAt;
+    if (due != null && !due.isAfter(current)) return true;
     if (externalId == null || !externalId.startsWith('activity:')) {
       return false;
     }
-    final key = '${item.source.name}:$externalId';
-    if (incomingKeys.contains(key)) return false;
-
     final courseName = item.courseName;
     final reconciled =
         courseName != null && reconciledCourseNames.contains(courseName);
     if (reconciled) return true;
-    final due = item.dueAt;
     return due == null || !due.isAfter(current);
   });
   final removed = removedExamDeadlines + beforePrune - result.length;
@@ -164,7 +175,8 @@ XuexitongMergeResult mergeXuexitongDeadlines({
   for (var index = 0; index < result.length; index++) {
     final item = result[index];
     if (item.source == DeadlineSource.xuexitong && item.externalId != null) {
-      indexByKey['${item.source.name}:${item.externalId}'] = index;
+      indexByKey['${item.source.name}:${_taskIdentity(item.externalId!)}'] =
+          index;
     }
   }
 
@@ -178,7 +190,7 @@ XuexitongMergeResult mergeXuexitongDeadlines({
       continue;
     }
 
-    final key = '${item.source.name}:${item.externalId}';
+    final key = '${item.source.name}:${_taskIdentity(item.externalId!)}';
     final existingIndex = indexByKey[key];
 
     if (existingIndex == null) {
@@ -228,7 +240,9 @@ List<JiaowuExam> mapXuexitongExams(
   final current = now ?? DateTime.now();
   final result = <JiaowuExam>[];
   for (final task in tasks) {
-    if (task.type != 'exam' || task.id.trim().isEmpty) continue;
+    if (task.type != 'exam' || task.id.trim().isEmpty || task.status != 0) {
+      continue;
+    }
     final start = task.openTime.millisecondsSinceEpoch > 0
         ? task.openTime
         : parseXuexitongExamStartTime(task.title, now: current);
@@ -237,6 +251,7 @@ List<JiaowuExam> mapXuexitongExams(
     final end = task.endTime.millisecondsSinceEpoch > 0
         ? task.endTime
         : resolvedStart.add(const Duration(hours: 2));
+    if (!end.isAfter(current)) continue;
     result.add(
       JiaowuExam(
         externalId: 'xuexitong:${task.id.trim()}',
@@ -262,4 +277,21 @@ bool _changed(Deadline before, Deadline after) {
       before.courseName != after.courseName ||
       before.note != after.note ||
       before.completed != after.completed;
+}
+
+// enc_task 等临时参数和 API/网页域名不属于任务身份。
+String _taskIdentity(String id) {
+  final uri = Uri.tryParse(id);
+  if (uri == null ||
+      !(uri.host == 'chaoxing.com' || uri.host.endsWith('.chaoxing.com'))) {
+    return id;
+  }
+  final parameters = {
+    for (final e in uri.queryParameters.entries) e.key.toLowerCase(): e.value,
+  };
+  final task = parameters['taskrefid'];
+  final course = parameters['courseid'];
+  final clazz = parameters['classid'];
+  if (task == null || course == null || clazz == null) return id;
+  return '${uri.path.contains('/exam/') ? 'exam' : 'work'}:$course:$clazz:$task';
 }

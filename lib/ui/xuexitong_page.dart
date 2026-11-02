@@ -170,6 +170,7 @@ class _XuexitongPageState extends State<XuexitongPage> {
       final merged = mergeXuexitongDeadlines(
         existing: _existingDeadlines,
         incoming: mapping.deadlines,
+        excludedExternalIds: mapping.excludedExternalIds,
         reconciledCourseNames: result.reconciledCourseNames,
         exams: exams,
       );
@@ -606,7 +607,7 @@ class _XuexitongPageState extends State<XuexitongPage> {
                   ),
                 if (preview.removed > 0)
                   Text(
-                    '清理过期 ${preview.removed}',
+                    '清理已提交/已截止 ${preview.removed}',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),

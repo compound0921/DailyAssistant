@@ -11,6 +11,7 @@ import 'xuexitong_course_cache.dart';
 import 'xuexitong_due_time.dart';
 import 'xuexitong_practice_answer.dart';
 import 'xuexitong_session_store.dart';
+import 'xuexitong_task_status.dart';
 
 /// 学习通集成中面向上层的失败类型。
 enum XuexitongFailureKind {
@@ -110,8 +111,9 @@ class XuexitongService {
   static const String _courseListUrl =
       'https://mooc1-api.chaoxing.com/mycourse/backclazzdata';
   static const String _deviceIdStorageKey = 'xuexitong_device_id_v1';
-  static const String _taskDetailCacheKey = 'xuexitong_task_detail_cache_v1';
-  static const Duration _taskDetailRefreshInterval = Duration(days: 7);
+  // v1 未区分请求失败和无截止时间，不复用旧缓存。
+  static const String _taskDetailCacheKey = 'xuexitong_task_detail_cache_v2';
+  static const Duration _taskDetailRefreshInterval = Duration(minutes: 15);
 
   final XuexitongSessionStore _store;
   final ChaoxingAuthService _auth;
@@ -202,10 +204,10 @@ class XuexitongService {
     List<ChaoxingTaskItem>? workTasks;
     final workWatch = Stopwatch()..start();
     try {
-      workTasks = await _fetchTaskFeed(session);
+      workTasks = await _fetchTaskFeed(session, warnings);
     } on ChaoxingSessionExpired {
       session = await _relogin();
-      workTasks = await _fetchTaskFeed(session);
+      workTasks = await _fetchTaskFeed(session, warnings);
     } on _FeedUnavailable catch (error) {
       debugPrint('[XXT] taskmsg unavailable: ${error.message}');
       usedFallback = true;
@@ -385,7 +387,10 @@ class XuexitongService {
     };
   }
 
-  Future<List<ChaoxingTaskItem>> _fetchTaskFeed(ChaoxingSession session) async {
+  Future<List<ChaoxingTaskItem>> _fetchTaskFeed(
+    ChaoxingSession session,
+    List<String> warnings,
+  ) async {
     const pageSize = 50;
     const maxItems = 300;
     const fields =
@@ -422,13 +427,18 @@ class XuexitongService {
       }
 
       final list = body['data'];
-      if (list is! List) break;
+      if (list is! List || list.any((item) => item is! Map)) {
+        throw const _FeedUnavailable('任务列表结构异常');
+      }
       for (final item in list) {
         if (item is Map) {
           tasks.add(ChaoxingTaskItem.fromJson(item.cast<String, dynamic>()));
         }
       }
       if (list.length < pageSize) break;
+      if (tasks.length >= maxItems) {
+        warnings.add('任务总列表已达 $maxItems 条上限，本次结果可能不完整。');
+      }
       offset += pageSize;
     }
 
@@ -480,6 +490,12 @@ class XuexitongService {
     for (final result in results) {
       warnings.addAll(result.warnings);
       for (final task in result.tasks) {
+        final taskStatus = _courseTaskStatus(task);
+        if (taskStatus == XuexitongTaskStatus.unknown) {
+          warnings.add(
+            '「${result.course.courseName} · ${task.title}」提交状态未知，暂不纳入日程。',
+          );
+        }
         final isExam = task.type == ChaoxingCourseTask.exam;
         final finishedExam = isExam && _isFinishedExam(task);
         if (isExam && !finishedExam) {
@@ -488,7 +504,7 @@ class XuexitongService {
         final mapped = _mapCourseTask(
           task,
           result.course.courseName,
-          allowNoDue: false,
+          allowNoDue: taskStatus != XuexitongTaskStatus.pending,
         );
         if (mapped != null) {
           tasks.add(mapped);
@@ -523,7 +539,8 @@ class XuexitongService {
       final cached = detailCache[item.task.url.trim()];
       // 「未开始」的考试每次同步都重读详情：时间可能在平台上调整，且缓存
       // 过期后必须能重新解析，不能依赖某次偶然成功的旧缓存。
-      final fresh = item.task.type != ChaoxingCourseTask.exam &&
+      final fresh =
+          item.task.type != ChaoxingCourseTask.exam &&
           cached != null &&
           cached.title == item.task.title &&
           cached.status == item.task.statusText &&
@@ -537,7 +554,7 @@ class XuexitongService {
     const maxDetailFetches = 100;
     const detailConcurrency = 4;
     final detailTasks = tasksToFetch.take(maxDetailFetches).toList();
-    final dueByUrl = <String, ({DateTime? due, DateTime? start})>{};
+    final dueByUrl = <String, _TaskDetailResult>{};
     final detailWatch = Stopwatch()..start();
     for (
       var start = 0;
@@ -563,18 +580,28 @@ class XuexitongService {
     for (final item in detailTasks) {
       final detail = dueByUrl[item.task.url]!;
       final previous = detailCache[item.task.url.trim()];
-      final isExam = item.task.type == ChaoxingCourseTask.exam;
-      // 考试每次都会重读详情；这次请求失败时保留上次解析到的时间，
-      // 避免网络抖动把考试从「考试安排」里删掉。
-      final dueAt = detail.due ?? (isExam ? previous?.dueAt : null);
-      final startAt = detail.start ?? (isExam ? previous?.startAt : null);
-      detailCache[item.task.url.trim()] = _TaskDetailCacheEntry(
-        title: item.task.title,
-        status: item.task.statusText,
-        dueAt: dueAt,
-        startAt: startAt,
-        fetchedAt: nowForCache,
-      );
+      final usablePrevious = previous?.title == item.task.title
+          ? previous
+          : null;
+      // 失败或未识别时间时沿用已知时间，不把失败刷新成无截止缓存。
+      final dueAt = detail.noDue ? null : detail.due ?? usablePrevious?.dueAt;
+      final startAt = detail.start ?? usablePrevious?.startAt;
+      if (detail.due != null || detail.noDue) {
+        detailCache[item.task.url.trim()] = _TaskDetailCacheEntry(
+          title: item.task.title,
+          status: item.task.statusText,
+          dueAt: dueAt,
+          startAt: startAt,
+          fetchedAt: nowForCache,
+        );
+      } else {
+        warnings.add(
+          '「${item.courseName} · ${item.task.title}」'
+          '${detail.loaded ? '详情未识别到截止时间' : '详情读取失败'}，'
+          '${usablePrevious == null ? '下次同步重试' : '暂用上次时间，下次同步重试'}。',
+        );
+      }
+      if (!detail.loaded && usablePrevious == null) continue;
       final mapped = _mapCourseTask(
         item.task,
         item.courseName,
@@ -631,10 +658,12 @@ class XuexitongService {
     if (raw == null || raw.isEmpty) return {};
     try {
       final map = jsonDecode(raw) as Map<String, dynamic>;
-      return map.map((key, value) => MapEntry(
-            key,
-            _TaskDetailCacheEntry.fromJson(value as Map<String, dynamic>),
-          ));
+      return map.map(
+        (key, value) => MapEntry(
+          key,
+          _TaskDetailCacheEntry.fromJson(value as Map<String, dynamic>),
+        ),
+      );
     } catch (_) {
       return {};
     }
@@ -689,35 +718,37 @@ class XuexitongService {
     );
   }
 
-  Future<({DateTime? due, DateTime? start})> _fetchDetailDueTime(
+  Future<_TaskDetailResult> _fetchDetailDueTime(
     ChaoxingSession session,
     String rawUrl, {
     bool followRedirects = false,
   }) async {
     final resolved = _resolveTaskUrl(rawUrl);
-    if (resolved == null) return (due: null, start: null);
+    if (resolved == null) return const _TaskDetailResult();
     var uri = resolved;
 
     const maxHops = 2;
     Response<String>? response;
     for (var hop = 0; hop <= maxHops; hop++) {
       try {
-        response = await _dio.get<String>(
-          uri.toString(),
-          options: Options(
-            headers: {
-              ..._headers(session),
-              'Referer': 'https://mooc1.chaoxing.com/',
-            },
-            responseType: ResponseType.plain,
-            followRedirects: false,
-            // 考试详情会 302 到 /exam-ans；超时兜底，避免拖住整次同步。
-            receiveTimeout: const Duration(seconds: 8),
-            validateStatus: (status) => status != null && status < 500,
-          ),
-        ).timeout(const Duration(seconds: 10));
+        response = await _dio
+            .get<String>(
+              uri.toString(),
+              options: Options(
+                headers: {
+                  ..._headers(session),
+                  'Referer': 'https://mooc1.chaoxing.com/',
+                },
+                responseType: ResponseType.plain,
+                followRedirects: false,
+                // 考试详情会 302 到 /exam-ans；超时兜底，避免拖住整次同步。
+                receiveTimeout: const Duration(seconds: 8),
+                validateStatus: (status) => status != null && status < 500,
+              ),
+            )
+            .timeout(const Duration(seconds: 10));
       } catch (_) {
-        return (due: null, start: null);
+        return const _TaskDetailResult();
       }
       final status = response.statusCode ?? 0;
       final location = response.headers.value('location') ?? '';
@@ -732,19 +763,27 @@ class XuexitongService {
       break;
     }
 
-    if (response == null) return (due: null, start: null);
+    if (response == null) return const _TaskDetailResult();
     final code = response.statusCode ?? 0;
     final html = response.data ?? '';
-    if (code < 200 || code >= 400) return (due: null, start: null);
+    if (code < 200 || code >= 300) return const _TaskDetailResult();
 
     if (html.contains('passport2.chaoxing.com/login') ||
         html.contains('<title>登录')) {
-      return (due: null, start: null);
+      return const _TaskDetailResult();
     }
 
     final text = html_parser.parse(html).body?.text ?? '';
-    return (
-      due: parseXuexitongDueTime(text),
+    final due = parseXuexitongDueTime(text);
+    return _TaskDetailResult(
+      loaded: text.trim().isNotEmpty,
+      noDue:
+          due == null &&
+          RegExp(
+            r'无截止时间|不限时|不限制时间|永不过期|\b(no deadline|no time limit)\b',
+            caseSensitive: false,
+          ).hasMatch(text),
+      due: due,
       start: parseXuexitongExamStartTime(text),
     );
   }
@@ -1306,11 +1345,16 @@ class XuexitongService {
       title: task.title,
       courseName: courseName,
       type: task.type,
-      status: _isCompletedStatus(task.statusText, rawStatus: task.status)
-          ? 1
-          : 0,
+      // -1 仅用于本地同步管线：明确已结束但未证实提交，供映射层清理。
+      status: switch (_courseTaskStatus(task)) {
+        XuexitongTaskStatus.submitted => 1,
+        XuexitongTaskStatus.closed => -1,
+        XuexitongTaskStatus.unknown => -2,
+        XuexitongTaskStatus.pending => 0,
+      },
       openTime: task.type == ChaoxingCourseTask.exam
-          ? (examStartAt ?? parseXuexitongExamStartTime(text) ??
+          ? (examStartAt ??
+                parseXuexitongExamStartTime(text) ??
                 DateTime.fromMillisecondsSinceEpoch(0))
           : DateTime.fromMillisecondsSinceEpoch(0),
       // ChaoxingTaskItem 使用纪元时间表示平台明确没有截止时间；
@@ -1320,27 +1364,20 @@ class XuexitongService {
     );
   }
 
-  /// 考试列表里的完成/过期判定。只认明确的完成、过期文字和 2/4 状态，
-  /// 其余状态都继续读详情，避免把新发布的考试误判为已结束。
+  /// 已提交或明确结束的考试不再读取详情；未知数字状态不作猜测。
   bool _isFinishedExam(ChaoxingCourseTask task) {
-    final text = task.statusText;
-    if (text.contains('完成') || text.contains('已过期') || text.contains('已结束')) {
-      return true;
-    }
-    return task.status == 2 || task.status == 4;
+    final status = _courseTaskStatus(task);
+    return status == XuexitongTaskStatus.submitted ||
+        status == XuexitongTaskStatus.closed;
   }
 
-  bool _isCompletedStatus(String text, {int rawStatus = 0}) {
-    final value = text.trim();
-    if (rawStatus >= 2) return true;
-    if (value.contains('未完成') || value.contains('未提交')) return false;
-    return value.contains('已完成') ||
-        value.contains('已提交') ||
-        value.contains('已批') ||
-        value.contains('已评分') ||
-        value.contains('已作答') ||
-        value.contains('已结束') ||
-        value.contains('已过期');
+  XuexitongTaskStatus _courseTaskStatus(ChaoxingCourseTask task) {
+    final status = parseXuexitongTaskStatus(task.statusText);
+    if (status != XuexitongTaskStatus.unknown) return status;
+    // 部分列表把状态放在 span 等节点里，依赖包仅提取 b 标签。
+    // 排除标题，避免“未完成练习”等任务名称影响状态判断。
+    final detail = task.detail.replaceAll(task.title, '').trim();
+    return parseXuexitongTaskStatus(detail);
   }
 
   Map<String, String> _headers(ChaoxingSession session) => {
@@ -1441,6 +1478,20 @@ class _FallbackCourseTasks {
   final List<String> warnings;
 }
 
+class _TaskDetailResult {
+  const _TaskDetailResult({
+    this.due,
+    this.start,
+    this.loaded = false,
+    this.noDue = false,
+  });
+
+  final DateTime? due;
+  final DateTime? start;
+  final bool loaded;
+  final bool noDue;
+}
+
 class _TaskDetailCacheEntry {
   const _TaskDetailCacheEntry({
     required this.title,
@@ -1457,12 +1508,12 @@ class _TaskDetailCacheEntry {
   final DateTime fetchedAt;
 
   Map<String, dynamic> toJson() => {
-        'title': title,
-        'status': status,
-        'dueAt': dueAt?.toIso8601String(),
-        'startAt': startAt?.toIso8601String(),
-        'fetchedAt': fetchedAt.toIso8601String(),
-      };
+    'title': title,
+    'status': status,
+    'dueAt': dueAt?.toIso8601String(),
+    'startAt': startAt?.toIso8601String(),
+    'fetchedAt': fetchedAt.toIso8601String(),
+  };
 
   factory _TaskDetailCacheEntry.fromJson(Map<String, dynamic> json) {
     return _TaskDetailCacheEntry(
@@ -1470,7 +1521,8 @@ class _TaskDetailCacheEntry {
       status: (json['status'] ?? '').toString(),
       dueAt: DateTime.tryParse((json['dueAt'] ?? '').toString()),
       startAt: DateTime.tryParse((json['startAt'] ?? '').toString()),
-      fetchedAt: DateTime.tryParse((json['fetchedAt'] ?? '').toString()) ??
+      fetchedAt:
+          DateTime.tryParse((json['fetchedAt'] ?? '').toString()) ??
           DateTime.fromMillisecondsSinceEpoch(0),
     );
   }

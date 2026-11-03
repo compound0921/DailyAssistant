@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:daily_assistant/app.dart';
 import 'package:daily_assistant/data/settings_repository.dart';
 import 'package:daily_assistant/data/timetable_repository.dart';
@@ -6,6 +8,7 @@ import 'package:daily_assistant/models/timetable.dart';
 import 'package:daily_assistant/models/timetable_store.dart';
 import 'package:daily_assistant/ui/week_view.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -118,6 +121,49 @@ Future<void> openSchedule(WidgetTester tester) async {
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+  });
+
+  testWidgets('整轮同步结束后只提示一次，失败信息合并且重复刷新共用任务', (tester) async {
+    const channel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    final lastSource = Completer<String?>();
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method != 'read') return null;
+      final key = (call.arguments as Map)['key'];
+      if (key == 'yuketang_cookies_v1') return lastSource.future;
+      if (key == 'jiaowu_account_v1') {
+        throw PlatformException(code: 'test', message: '模拟读取失败');
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await tester.pumpWidget(
+      DailyAssistantApp(repository: TimetableRepository()),
+    );
+    await tester.pumpAndSettle();
+    final refresh = tester
+        .widget<RefreshIndicator>(find.byType(RefreshIndicator))
+        .onRefresh;
+    final first = refresh();
+    final second = refresh();
+    expect(identical(first, second), isTrue);
+    await tester.pump();
+    expect(find.byType(SnackBar), findsNothing);
+
+    lastSource.complete(null);
+    await tester.pumpAndSettle();
+    await Future.wait([first, second]);
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.textContaining('学习通：未登录，已跳过'), findsOneWidget);
+    expect(find.textContaining('教务同步失败'), findsOneWidget);
+    expect(find.textContaining('雨课堂：未登录，已跳过'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+    expect(find.byType(SnackBar), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('首页提供课表和日程入口', (tester) async {

@@ -85,8 +85,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       widget.settingsRepository ?? SettingsRepository();
   final DeadlineNotificationService _notifications =
       DeadlineNotificationService.instance;
-  bool _autoSyncRunning = false;
-  bool _autoSyncJiaowuRunning = false;
+  Future<void>? _syncAllFuture;
+  bool _reportSyncResult = false;
   SyncTarget _syncTarget = SyncTarget.xuexitong;
   List<JiaowuMessage> _jiaowuMessages = const [];
   List<JiaowuExam> _jiaowuExams = const [];
@@ -119,13 +119,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // 两个来源都会改写同一份 Deadline 列表，串行执行避免合并结果互相覆盖。
-      await _autoSyncXuexitong();
-      // 调试版忽略 5 分钟冷却，便于反复验证教务页面。
-      await _autoSyncJiaowu(force: kDebugMode);
-      // 第一阶段只验证登录与课程列表：失效或断网都不打扰。
-      await _autoCheckYuketang();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_syncAll());
     });
   }
 
@@ -362,27 +357,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return saved;
   }
 
-  Future<void> _autoSyncXuexitong({
-    bool force = false,
-    bool report = false,
-  }) async {
-    if (_autoSyncRunning) {
-      if (report) _showMessage('正在同步，请稍候', sync: true);
-      return;
-    }
-    _autoSyncRunning = true;
+  Future<String> _autoSyncXuexitong({bool force = false}) async {
     try {
       final state = await _xuexitongService.loadStoredState();
       if (!state.hasCredentials && !state.isLoggedIn) {
-        if (report) _showMessage('还没有登录学习通，请先到学习通页面登录', sync: true);
-        return;
+        return '学习通：未登录，已跳过';
       }
 
       final lastSync = state.lastSyncAt;
       if (!force &&
           lastSync != null &&
           DateTime.now().difference(lastSync) < _autoSyncInterval) {
-        return;
+        return '学习通：近期已同步';
       }
 
       final result = await _xuexitongService.fetchTasks();
@@ -402,60 +388,50 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         setState(() => _jiaowuExams = examSnapshot.exams);
       }
       if (!merged.hasChanges) {
-        if (report) _showMessage('学习通已是最新', sync: true);
-        return;
+        return '学习通已是最新';
       }
       final saved = await _persistDeadlines(merged.deadlines);
-      if (saved && report) _showMessage(_xuexitongSummary(merged), sync: true);
+      return saved ? _xuexitongSummary(merged) : '学习通同步失败：保存日程失败';
     } on XuexitongException catch (error) {
-      if (report) _showMessage('学习通同步失败：${error.message}', sync: true);
+      return '学习通同步失败：${error.message}';
     } catch (error) {
-      if (report) _showMessage('学习通同步失败：$error', sync: true);
-    } finally {
-      _autoSyncRunning = false;
+      return '学习通同步失败：$error';
     }
   }
 
-  Future<void> _autoCheckYuketang({bool force = false}) async {
+  Future<String> _autoCheckYuketang({bool force = false}) async {
     try {
       final state = await _yuketangService.loadStoredState();
-      if (!state.hasSession) return;
+      if (!state.hasSession) return '雨课堂：未登录，已跳过';
       final checkedAt = state.lastCheckedAt;
       if (!force &&
           checkedAt != null &&
           DateTime.now().difference(checkedAt) < _autoSyncInterval) {
-        return;
+        return '雨课堂：近期已同步';
       }
       await _yuketangService.refresh();
       final updated = await _yuketangService.loadStoredState();
-      if (!mounted) return;
-      setState(() => _yuketangSnapshot = updated.snapshot);
-    } catch (_) {
-      // 静默：会话失效或网络异常都不在启动时打扰用户。
+      if (mounted) setState(() => _yuketangSnapshot = updated.snapshot);
+      return '雨课堂同步完成';
+    } on YuketangException catch (error) {
+      return '雨课堂同步失败：${error.message}';
+    } catch (error) {
+      return '雨课堂同步失败：$error';
     }
   }
 
-  Future<void> _autoSyncJiaowu({
-    bool force = false,
-    bool report = false,
-  }) async {
-    if (_autoSyncJiaowuRunning) {
-      if (report) _showMessage('正在同步教务，请稍候', sync: true);
-      return;
-    }
-    _autoSyncJiaowuRunning = true;
+  Future<String> _autoSyncJiaowu({bool force = false}) async {
     try {
       final state = await _jiaowuService.loadStoredState();
       if (!state.hasCredentials && !state.hasSession) {
-        if (report) _showMessage('还没有登录教务，请先到同步页登录', sync: true);
-        return;
+        return '教务：未登录，已跳过';
       }
 
       final lastSync = state.lastSyncAt;
       if (!force &&
           lastSync != null &&
           DateTime.now().difference(lastSync) < _autoSyncInterval) {
-        return;
+        return '教务：近期已同步';
       }
 
       final result = await _jiaowuService.fetchSnapshot();
@@ -465,19 +441,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _jiaowuExams = result.snapshot.exams;
         });
       }
-      if (report) {
-        _showMessage(
-          '教务同步完成：${result.snapshot.messages.length} 条消息，'
-          '${result.snapshot.exams.length} 场考试',
-          sync: true,
-        );
-      }
+      return '教务同步完成：${result.snapshot.messages.length} 条消息，'
+          '${result.snapshot.exams.length} 场考试';
     } on JiaowuException catch (error) {
-      if (report) _showMessage('教务同步失败：${error.message}', sync: true);
+      return '教务同步失败：${error.message}';
     } catch (error) {
-      if (report) _showMessage('教务同步失败：$error', sync: true);
-    } finally {
-      _autoSyncJiaowuRunning = false;
+      return '教务同步失败：$error';
     }
   }
 
@@ -560,11 +529,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _refreshFromPull() async {
-    // 串行合并，避免两个来源同时基于旧列表写入。
-    await _autoSyncXuexitong(force: true, report: true);
-    await _autoSyncJiaowu(force: true, report: true);
-    await _autoCheckYuketang(force: true);
+  Future<void> _refreshFromPull() => _syncAll(force: true, report: true);
+
+  Future<void> _syncAll({bool force = false, bool report = false}) {
+    // 下拉刷新加入正在进行的整轮同步，不提前提示，也不重复发起请求。
+    _reportSyncResult = _reportSyncResult || report;
+    return _syncAllFuture ??= _runAllSync(force: force);
+  }
+
+  Future<void> _runAllSync({required bool force}) async {
+    try {
+      // 串行合并，避免多个来源同时基于旧列表写入。
+      final results = [
+        await _autoSyncXuexitong(force: force),
+        // 调试版保留忽略教务冷却的行为。
+        await _autoSyncJiaowu(force: force || kDebugMode),
+        await _autoCheckYuketang(force: force),
+      ];
+      if (_reportSyncResult) {
+        _showMessage(results.join('\n'), sync: true);
+      }
+    } finally {
+      _syncAllFuture = null;
+      _reportSyncResult = false;
+    }
   }
 
   String _xuexitongSummary(XuexitongMergeResult result) {

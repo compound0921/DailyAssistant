@@ -20,6 +20,7 @@ class SettingsPage extends StatelessWidget {
     this.themeMode,
     this.onThemeModeChanged,
     this.onNotificationSettingsChanged,
+    this.onOpenLanSync,
   });
 
   final Timetable? timetable;
@@ -34,6 +35,7 @@ class SettingsPage extends StatelessWidget {
 
   /// 通知设置变更后通知首页重新加载并刷新原生常驻通知。
   final Future<void> Function()? onNotificationSettingsChanged;
+  final VoidCallback? onOpenLanSync;
 
   void _openTimetableSettings(BuildContext context) {
     Navigator.of(context).push<void>(
@@ -109,6 +111,18 @@ class SettingsPage extends StatelessWidget {
                   onTap: () => _openGeneralSettings(context),
                 ),
               ),
+              if (onOpenLanSync != null) ...[
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.devices_outlined),
+                    title: const Text('局域网同步'),
+                    subtitle: const Text('在电脑与手机之间全量传输数据'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: onOpenLanSync,
+                  ),
+                ),
+              ],
             ],
           ),
         ),

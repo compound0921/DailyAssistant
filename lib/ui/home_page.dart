@@ -31,6 +31,7 @@ import 'deadline_tag.dart';
 import 'exam_edit_page.dart';
 import 'home_schedule_mapper.dart';
 import 'import_page.dart';
+import 'lan_sync_page.dart';
 import 'settings_page.dart';
 import 'swipe_action_row.dart';
 import 'sync_page.dart';
@@ -239,6 +240,44 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _syncTarget = target;
       _section = _HomeSection.sync;
     });
+  }
+
+  bool _openingLanSync = false;
+
+  Future<void> _openLanSync() async {
+    if (_openingLanSync) return;
+    _openingLanSync = true;
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => LanSyncPage(
+            onPrepare: () async {
+              // 页面展示等待状态，避免传输或覆盖时旧任务继续写入。
+              await _syncAllFuture;
+              await _examOrderSave;
+            },
+            onApplied: _reloadAfterLanSync,
+          ),
+        ),
+      );
+    } finally {
+      _openingLanSync = false;
+    }
+  }
+
+  Future<void> _reloadAfterLanSync() async {
+    final previous = _deadlines;
+    final store = await widget.repository.loadStore();
+    final deadlines = await widget.deadlineRepository.load();
+    await _loadJiaowuSnapshot();
+    if (!mounted) return;
+    setState(() {
+      _store = store;
+      _deadlines = deadlines;
+      _deadlineTagFilters = {};
+    });
+    await _syncReminders(deadlines: deadlines, previous: previous);
+    await _syncDeadlinePin();
   }
 
   // ---------- 课表 ----------
@@ -1164,6 +1203,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           themeMode: widget.themeMode,
           onThemeModeChanged: widget.onThemeModeChanged,
           onNotificationSettingsChanged: _loadNotificationSettings,
+          onOpenLanSync: _openLanSync,
         );
     }
   }

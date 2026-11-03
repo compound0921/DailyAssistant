@@ -192,6 +192,12 @@ void main() {
     expect(find.byType(ReorderableDragStartListener), findsNothing);
     await tester.tap(find.byTooltip('批量选择').last);
     await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('全选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 2'), findsOneWidget);
+    await tester.tap(find.byTooltip('取消全选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 0'), findsOneWidget);
     await tester.tap(find.text('较早考试'));
     await tester.pumpAndSettle();
     expect(find.text('已选 1'), findsOneWidget);

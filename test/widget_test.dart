@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:daily_assistant/app.dart';
+import 'package:daily_assistant/data/deadline_repository.dart';
 import 'package:daily_assistant/data/settings_repository.dart';
 import 'package:daily_assistant/data/timetable_repository.dart';
 import 'package:daily_assistant/models/deadline.dart';
 import 'package:daily_assistant/models/timetable.dart';
 import 'package:daily_assistant/models/timetable_store.dart';
 import 'package:daily_assistant/ui/week_view.dart';
+import 'package:daily_assistant/ui/swipe_action_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -508,11 +510,21 @@ void main() {
     expect(find.text('新增日程'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).first, '新作业');
+    await tester.ensureVisible(find.text('截止时提醒'));
+    await tester.tap(find.text('截止时提醒'));
+    await tester.pumpAndSettle();
+    expect(find.text('提醒时间'), findsOneWidget);
+    await tester.tap(find.text('提前 10 分钟'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
 
     expect(find.text('新作业'), findsOneWidget);
     expect(find.text('待完成 (1)'), findsOneWidget);
+    expect(
+      (await DeadlineRepository().load()).single.reminderOffsetMinutes,
+      10,
+    );
   });
 
   testWidgets('按剩余时长新增日程', (tester) async {
@@ -570,6 +582,10 @@ void main() {
   });
 
   testWidgets('首页标签筛选支持多选', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime.now();
     final homework = Deadline(
       id: 'homework',
@@ -607,18 +623,174 @@ void main() {
     await tester.ensureVisible(filter);
     await tester.tap(filter);
     await tester.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(MenuItemButton, '作业'));
+    await tester.tap(find.widgetWithText(FilterChip, '作业'));
     await tester.pumpAndSettle();
     expect(find.text('交作业'), findsOneWidget);
     expect(find.text('买生活用品'), findsNothing);
     expect(find.text('无标签事项'), findsNothing);
 
-    await tester.tap(find.widgetWithText(MenuItemButton, '生活'));
+    await tester.tap(find.widgetWithText(FilterChip, '生活'));
     await tester.pumpAndSettle();
     expect(find.text('交作业'), findsOneWidget);
     expect(find.text('买生活用品'), findsOneWidget);
     expect(find.text('无标签事项'), findsNothing);
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('批量选择').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('全选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 2'), findsOneWidget);
+    expect(
+      tester
+          .widgetList<Checkbox>(find.byType(Checkbox))
+          .every((box) => box.value == true),
+      isTrue,
+    );
+    await tester.tap(find.byTooltip('取消全选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 0'), findsOneWidget);
+  });
+
+  testWidgets('首页连续小幅左滑可完成日程，勾选完成后平滑移入已完成分组', (tester) async {
+    final now = DateTime.now();
+    final first = Deadline(
+      id: 'first',
+      title: '首页左滑事项',
+      dueAt: now.add(const Duration(days: 1)),
+      createdAt: now,
+      updatedAt: now,
+    );
+    final second = Deadline(
+      id: 'second',
+      title: '勾选过渡事项',
+      dueAt: now.add(const Duration(days: 2)),
+      createdAt: now,
+      updatedAt: now,
+    );
+    await tester.pumpWidget(
+      DailyAssistantApp(
+        repository: TimetableRepository(),
+        initialDeadlines: [first, second],
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('首页左滑事项'));
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('首页左滑事项')),
+    );
+    for (var i = 0; i < 30; i++) {
+      await gesture.moveBy(const Offset(-10, 0));
+      await tester.pump(const Duration(milliseconds: 8));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.text('首页左滑事项'), findsNothing);
+    expect(
+      (await DeadlineRepository().load())
+          .firstWhere((e) => e.id == 'first')
+          .completed,
+      isTrue,
+    );
+
+    await openSchedule(tester);
+    final card = find
+        .ancestor(of: find.text('勾选过渡事项'), matching: find.byType(Card))
+        .first;
+    await tester.tap(
+      find.descendant(of: card, matching: find.byType(Checkbox)),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 60));
+    // 数据已经保存，原分组仍在淡出，不会先等待动画才保存用户操作。
+    expect(
+      (await DeadlineRepository().load())
+          .firstWhere((e) => e.id == 'second')
+          .completed,
+      isTrue,
+    );
+    expect(find.text('待完成 (1)'), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.text('待完成 (0)'), findsOneWidget);
+    expect(find.text('已完成 (2)'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('完整左滑展示阈值、拖回取消和确认收起动画后才提交', (tester) async {
+    var completions = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 320,
+              child: SwipeActionRow(
+                backgroundColor: Colors.white,
+                onFullSwipe: () async {
+                  completions++;
+                },
+                actions: [
+                  SwipeAction(
+                    label: '编辑',
+                    icon: Icons.edit_outlined,
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    onPressed: () {},
+                  ),
+                  SwipeAction(
+                    label: '删除',
+                    icon: Icons.delete_outline,
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                    onPressed: () {},
+                  ),
+                ],
+                child: const SizedBox(
+                  height: 80,
+                  child: Center(child: Text('手势事项')),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final row = find.byType(SwipeActionRow);
+    Future<void> move(TestGesture gesture, int steps, double delta) async {
+      for (var i = 0; i < steps; i++) {
+        await gesture.moveBy(Offset(delta, 0));
+        await tester.pump(const Duration(milliseconds: 8));
+      }
+    }
+
+    final cancelled = await tester.startGesture(tester.getCenter(row));
+    await move(cancelled, 19, -10);
+    expect(find.text('继续左滑完成'), findsOneWidget);
+    await move(cancelled, 9, -10);
+    expect(find.text('松开即可完成'), findsOneWidget);
+    expect(completions, 0);
+    await move(cancelled, 10, 10);
+    expect(find.text('松开即可完成'), findsNothing);
+    await cancelled.up();
+    await tester.pumpAndSettle();
+    expect(completions, 0);
+
+    final confirmed = await tester.startGesture(tester.getCenter(row));
+    await move(confirmed, 14, -10);
+    expect(find.text('松开即可完成'), findsOneWidget);
+    await confirmed.up();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(find.text('已完成'), findsOneWidget);
+    expect(completions, 0);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.getSize(row).height, allOf(greaterThan(0), lessThan(80)));
+    expect(completions, 0);
+    await tester.pumpAndSettle();
+    expect(completions, 1);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('可以编辑课程信息并恢复导入时的信息', (tester) async {

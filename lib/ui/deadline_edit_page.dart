@@ -4,16 +4,13 @@ import 'package:uuid/uuid.dart';
 
 import '../models/deadline.dart';
 import 'deadline_tag.dart';
+import 'selection_sheet.dart';
 import 'timetable_format.dart';
 
 enum _DueMode { dateTime, remaining, none }
 
 class DeadlineEditPage extends StatefulWidget {
-  const DeadlineEditPage({
-    super.key,
-    this.initial,
-    this.tagOptions = const [],
-  });
+  const DeadlineEditPage({super.key, this.initial, this.tagOptions = const []});
 
   final Deadline? initial;
 
@@ -40,6 +37,13 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
 
   /// -1 = 不提醒，0 = 准时，正数 = 提前分钟数。
   int _reminderChoice = 0;
+  static const _reminderOptions = [
+    (-1, '不提醒'),
+    (0, '截止时提醒'),
+    (10, '提前 10 分钟'),
+    (60, '提前 1 小时'),
+    (1440, '提前 1 天'),
+  ];
   String? _titleError;
   String? _durationError;
 
@@ -305,24 +309,32 @@ class _DeadlineEditPageState extends State<DeadlineEditPage> {
                   ),
                 if (_mode != _DueMode.none) ...[
                   const SizedBox(height: 16),
-                  DropdownButtonFormField<int>(
-                    key: ValueKey('reminder-$_reminderChoice'),
-                    initialValue: _reminderChoice,
-                    decoration: const InputDecoration(
-                      labelText: '提醒',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: const [
-                      DropdownMenuItem(value: -1, child: Text('不提醒')),
-                      DropdownMenuItem(value: 0, child: Text('截止时提醒')),
-                      DropdownMenuItem(value: 10, child: Text('提前 10 分钟')),
-                      DropdownMenuItem(value: 60, child: Text('提前 1 小时')),
-                      DropdownMenuItem(value: 1440, child: Text('提前 1 天')),
-                    ],
-                    onChanged: (value) {
-                      if (value == null) return;
-                      setState(() => _reminderChoice = value);
+                  InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () async {
+                      final value = await showSingleSelectionSheet<int>(
+                        context: context,
+                        title: '提醒时间',
+                        selected: _reminderChoice,
+                        options: _reminderOptions,
+                      );
+                      if (value != null && mounted) {
+                        setState(() => _reminderChoice = value);
+                      }
                     },
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: '提醒',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.notifications_none),
+                        suffixIcon: Icon(Icons.expand_more),
+                      ),
+                      child: Text(
+                        _reminderOptions
+                            .firstWhere((item) => item.$1 == _reminderChoice)
+                            .$2,
+                      ),
+                    ),
                   ),
                 ],
                 const SizedBox(height: 16),

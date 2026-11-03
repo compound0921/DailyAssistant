@@ -26,7 +26,7 @@ class DeadlineSection extends StatefulWidget {
   final VoidCallback onCreate;
   final ValueChanged<Deadline> onEdit;
   final ValueChanged<Deadline> onDelete;
-  final ValueChanged<Deadline> onToggle;
+  final Future<void> Function(Deadline) onToggle;
   final ValueChanged<List<Deadline>> onClearExpired;
   final ValueChanged<List<Deadline>> onClearCompleted;
 
@@ -48,6 +48,10 @@ class _DeadlineSectionState extends State<DeadlineSection> {
   bool _editing = false;
   bool _selecting = false;
   final Set<String> _selectedIds = {};
+  // 先持久化新状态，视觉上保留旧分组直到退出过渡结束。
+  final Map<String, Deadline> _departing = {};
+  final Set<String> _entering = {};
+  final Set<String> _swipeTransitions = {};
 
   /// 拖动后先用的本地顺序，避免数据还没回传时列表先回弹再跳位。
   List<Deadline>? _pendingOverride;
@@ -57,6 +61,26 @@ class _DeadlineSectionState extends State<DeadlineSection> {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.deadlines, widget.deadlines)) {
       _pendingOverride = null;
+      final previous = {for (final item in oldWidget.deadlines) item.id: item};
+      final currentIds = widget.deadlines.map((e) => e.id).toSet();
+      _departing.removeWhere((id, _) => !currentIds.contains(id));
+      _entering.removeWhere((id) => !currentIds.contains(id));
+      if (!_editing) {
+        for (final item in widget.deadlines) {
+          final old = previous[item.id];
+          if (old != null && old.completed != item.completed) {
+            if (_swipeTransitions.remove(item.id)) {
+              _departing.remove(item.id);
+              _entering.add(item.id);
+            } else if (_departing[item.id]?.completed == item.completed) {
+              _departing.remove(item.id);
+            } else {
+              _departing[item.id] = old;
+              _entering.remove(item.id);
+            }
+          }
+        }
+      }
     }
   }
 
@@ -139,7 +163,9 @@ class _DeadlineSectionState extends State<DeadlineSection> {
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
-    final groups = groupDeadlines(widget.deadlines, now: now);
+    final groups = groupDeadlines([
+      for (final item in widget.deadlines) _departing[item.id] ?? item,
+    ], now: now);
     if (groups.isEmpty) {
       return _DeadlineEmpty(onCreate: widget.onCreate);
     }
@@ -224,10 +250,7 @@ class _DeadlineSectionState extends State<DeadlineSection> {
                 else
                   ..._pendingWidgets(context, groups, now),
                 const SizedBox(height: 24),
-                _sectionHeader(
-                  theme,
-                  '已完成 (${groups.completed.length})',
-                ),
+                _sectionHeader(theme, '已完成 (${groups.completed.length})'),
                 if (groups.completed.isEmpty)
                   _emptyHint(theme, '没有已完成')
                 else
@@ -240,11 +263,7 @@ class _DeadlineSectionState extends State<DeadlineSection> {
     );
   }
 
-  Widget _sectionHeader(
-    ThemeData theme,
-    String title, {
-    Widget? trailing,
-  }) {
+  Widget _sectionHeader(ThemeData theme, String title, {Widget? trailing}) {
     return Row(
       children: [
         Expanded(child: Text(title, style: theme.textTheme.titleMedium)),
@@ -343,8 +362,10 @@ class _DeadlineSectionState extends State<DeadlineSection> {
                       // 手柄由行内按钮提供，关闭默认长按拖拽避免双触发。
                       buildDefaultDragHandles: false,
                       // 默认的拖动代理会给卡片套一层白色材质，这里保持原样式。
-                      proxyDecorator: (child, index, animation) =>
-                          Material(type: MaterialType.transparency, child: child),
+                      proxyDecorator: (child, index, animation) => Material(
+                        type: MaterialType.transparency,
+                        child: child,
+                      ),
                       onReorderItem: (oldIndex, newIndex) {
                         final next = [...pending];
                         final item = next.removeAt(oldIndex);
@@ -357,7 +378,8 @@ class _DeadlineSectionState extends State<DeadlineSection> {
                         return _DeadlineTile(
                           key: ValueKey(deadline.id),
                           deadline: deadline,
-                          overdue: deadline.dueAt != null &&
+                          overdue:
+                              deadline.dueAt != null &&
                               deadline.dueAt!.isBefore(now),
                           editing: true,
                           dragIndex: index,
@@ -382,21 +404,26 @@ class _DeadlineSectionState extends State<DeadlineSection> {
   ) {
     return [
       for (final deadline in groups.incomplete)
-        _DeadlineTile(
-          deadline: deadline,
-          overdue: deadline.dueAt != null && deadline.dueAt!.isBefore(now),
-          selecting: _selecting,
-          selected: _selectedIds.contains(deadline.id),
-          onToggleSelect: _selecting
-              ? () => setState(() {
-                  if (!_selectedIds.remove(deadline.id)) {
-                    _selectedIds.add(deadline.id);
-                  }
-                })
-              : null,
-          onToggle: () => widget.onToggle(deadline),
-          onEdit: () => widget.onEdit(deadline),
-          onDelete: () => widget.onDelete(deadline),
+        _animatedTile(
+          deadline,
+          _DeadlineTile(
+            deadline: deadline,
+            overdue: deadline.dueAt != null && deadline.dueAt!.isBefore(now),
+            selecting: _selecting,
+            selected: _selectedIds.contains(deadline.id),
+            onToggleSelect: _selecting
+                ? () => setState(() {
+                    if (!_selectedIds.remove(deadline.id)) {
+                      _selectedIds.add(deadline.id);
+                    }
+                  })
+                : null,
+            onToggle: () => widget.onToggle(_currentDeadline(deadline)),
+            onFullSwipe: () => _toggleFromSwipe(deadline),
+            onEdit: () => widget.onEdit(deadline),
+            onDelete: () => widget.onDelete(deadline),
+            completed: _currentCompleted(deadline),
+          ),
         ),
     ];
   }
@@ -404,14 +431,75 @@ class _DeadlineSectionState extends State<DeadlineSection> {
   List<Widget> _completedWidgets(List<Deadline> items) {
     return [
       for (final deadline in items)
-        _DeadlineTile(
-          deadline: deadline,
-          completed: true,
-          onToggle: () => widget.onToggle(deadline),
-          onEdit: () => widget.onEdit(deadline),
-          onDelete: () => widget.onDelete(deadline),
+        _animatedTile(
+          deadline,
+          _DeadlineTile(
+            deadline: deadline,
+            completed: _currentCompleted(deadline),
+            onToggle: () => widget.onToggle(_currentDeadline(deadline)),
+            onFullSwipe: () => _toggleFromSwipe(deadline),
+            onEdit: () => widget.onEdit(deadline),
+            onDelete: () => widget.onDelete(deadline),
+          ),
         ),
     ];
+  }
+
+  Deadline _currentDeadline(Deadline deadline) => widget.deadlines.firstWhere(
+    (item) => item.id == deadline.id,
+    orElse: () => deadline,
+  );
+
+  Future<void> _toggleFromSwipe(Deadline deadline) async {
+    _swipeTransitions.add(deadline.id);
+    try {
+      await widget.onToggle(_currentDeadline(deadline));
+    } finally {
+      // 即使保存失败，也不能影响下一次勾选时的正常过渡。
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _swipeTransitions.remove(deadline.id),
+      );
+    }
+  }
+
+  bool _currentCompleted(Deadline deadline) =>
+      _currentDeadline(deadline).completed;
+
+  Widget _animatedTile(Deadline deadline, Widget child) {
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    final leaving = _departing.containsKey(deadline.id);
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('completion-${deadline.id}-${deadline.completed}'),
+      tween: Tween(
+        begin: _entering.contains(deadline.id) ? 0 : 1,
+        end: leaving ? 0 : 1,
+      ),
+      duration: Duration(milliseconds: reduce ? 100 : 180),
+      curve: Curves.easeOutCubic,
+      onEnd: () {
+        if (_departing.containsKey(deadline.id)) {
+          setState(() {
+            _departing.remove(deadline.id);
+            _entering.add(deadline.id);
+          });
+        } else {
+          _entering.remove(deadline.id);
+        }
+      },
+      builder: (context, value, child) => Opacity(
+        opacity: value.clamp(0, 1),
+        child: reduce
+            ? child
+            : ClipRect(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  heightFactor: value,
+                  child: child,
+                ),
+              ),
+      ),
+      child: child,
+    );
   }
 
   Widget _emptyHint(ThemeData theme, String text) {
@@ -482,10 +570,12 @@ class _DeadlineTile extends StatelessWidget {
     this.selecting = false,
     this.selected = false,
     this.onToggleSelect,
+    this.onFullSwipe,
   });
 
   final Deadline deadline;
-  final VoidCallback onToggle;
+  final Future<void> Function() onToggle;
+  final Future<void> Function()? onFullSwipe;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final bool completed;
@@ -538,8 +628,7 @@ class _DeadlineTile extends StatelessWidget {
             ),
             Checkbox(
               value: selecting ? selected : completed,
-              onChanged: (_) =>
-                  selecting ? onToggleSelect?.call() : onToggle(),
+              onChanged: (_) => selecting ? onToggleSelect?.call() : onToggle(),
             ),
             Expanded(
               child: Column(
@@ -675,27 +764,29 @@ class _DeadlineTile extends StatelessWidget {
           child: editing || selecting
               ? row
               : SwipeActionRow(
-                backgroundColor:
-                    theme.cardTheme.color ?? theme.colorScheme.surface,
-                onFullSwipe: onToggle,
-                actions: [
-                  SwipeAction(
-                    label: '编辑',
-                    icon: Icons.edit_outlined,
-                    backgroundColor: theme.colorScheme.primaryContainer,
-                    foregroundColor: theme.colorScheme.onPrimaryContainer,
-                    onPressed: onEdit,
-                  ),
-                  SwipeAction(
-                    label: '删除',
-                    icon: Icons.delete_outline,
-                    backgroundColor: theme.colorScheme.errorContainer,
-                    foregroundColor: theme.colorScheme.onErrorContainer,
-                    onPressed: onDelete,
-                  ),
-                ],
-                child: row,
-              ),
+                  backgroundColor:
+                      theme.cardTheme.color ?? theme.colorScheme.surface,
+                  onFullSwipe: onFullSwipe ?? onToggle,
+                  fullSwipeLabel: completed ? '恢复' : '完成',
+                  fullSwipeDoneLabel: completed ? '已恢复' : '已完成',
+                  actions: [
+                    SwipeAction(
+                      label: '编辑',
+                      icon: Icons.edit_outlined,
+                      backgroundColor: theme.colorScheme.primaryContainer,
+                      foregroundColor: theme.colorScheme.onPrimaryContainer,
+                      onPressed: onEdit,
+                    ),
+                    SwipeAction(
+                      label: '删除',
+                      icon: Icons.delete_outline,
+                      backgroundColor: theme.colorScheme.errorContainer,
+                      foregroundColor: theme.colorScheme.onErrorContainer,
+                      onPressed: onDelete,
+                    ),
+                  ],
+                  child: row,
+                ),
         ),
       ),
     );

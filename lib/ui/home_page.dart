@@ -33,6 +33,7 @@ import 'home_schedule_mapper.dart';
 import 'import_page.dart';
 import 'lan_sync_page.dart';
 import 'settings_page.dart';
+import 'selection_sheet.dart';
 import 'swipe_action_row.dart';
 import 'sync_page.dart';
 import 'timetable_format.dart';
@@ -1269,7 +1270,7 @@ class _HomeOverview extends StatelessWidget {
   final ValueChanged<Deadline> onEditDeadline;
   final ValueChanged<Deadline> onDeleteDeadline;
   final ValueChanged<List<Deadline>> onDeleteSelectedDeadlines;
-  final ValueChanged<Deadline> onToggleDeadline;
+  final Future<void> Function(Deadline) onToggleDeadline;
   final ValueChanged<List<Deadline>> onAddToSchedule;
 
   @override
@@ -2028,7 +2029,7 @@ class _HomeDeadlinePreview extends StatefulWidget {
   final VoidCallback onOpenAll;
   final ValueChanged<Deadline> onEdit;
   final ValueChanged<Deadline> onDelete;
-  final ValueChanged<Deadline> onToggle;
+  final Future<void> Function(Deadline) onToggle;
   final ValueChanged<List<Deadline>> onDeleteSelected;
 
   @override
@@ -2038,6 +2039,26 @@ class _HomeDeadlinePreview extends StatefulWidget {
 class _HomeDeadlinePreviewState extends State<_HomeDeadlinePreview> {
   bool _selecting = false;
   final Set<String> _selectedIds = {};
+
+  @override
+  void didUpdateWidget(covariant _HomeDeadlinePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final ids = widget.items.map((item) => item.id).toSet();
+    _selectedIds.removeWhere((id) => !ids.contains(id));
+  }
+
+  void _toggleSelectAll() {
+    final ids = widget.items.map((item) => item.id).toSet();
+    setState(() {
+      if (ids.every(_selectedIds.contains)) {
+        _selectedIds.clear();
+      } else {
+        _selectedIds
+          ..clear()
+          ..addAll(ids);
+      }
+    });
+  }
 
   Future<void> _confirmDeleteSelected() async {
     final selected = [
@@ -2075,6 +2096,15 @@ class _HomeDeadlinePreviewState extends State<_HomeDeadlinePreview> {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          IconButton(
+            tooltip:
+                widget.items.isNotEmpty &&
+                    widget.items.every((item) => _selectedIds.contains(item.id))
+                ? '取消全选'
+                : '全选',
+            onPressed: widget.items.isEmpty ? null : _toggleSelectAll,
+            icon: const Icon(Icons.select_all, size: 20),
+          ),
           IconButton(
             tooltip: '删除选中',
             onPressed: _selectedIds.isEmpty ? null : _confirmDeleteSelected,
@@ -2132,10 +2162,12 @@ class _HomeDeadlinePreviewState extends State<_HomeDeadlinePreview> {
         Row(
           children: [
             Text('日程', style: theme.textTheme.titleMedium),
-            if (collapsed) ...[
+            if (collapsed || _selecting) ...[
               const SizedBox(width: 6),
               Text(
-                '${widget.totalCount}',
+                _selecting
+                    ? '已选 ${_selectedIds.length}'
+                    : '${widget.totalCount}',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -2145,53 +2177,27 @@ class _HomeDeadlinePreviewState extends State<_HomeDeadlinePreview> {
             if (!_selecting &&
                 (widget.tags.isNotEmpty || selectedTags.isNotEmpty) &&
                 !collapsed)
-              MenuAnchor(
-                alignmentOffset: const Offset(-24, 8),
-                menuChildren: [
-                  for (final tag in widget.tags)
-                    MenuItemButton(
-                      closeOnActivate: false,
-                      onPressed: () {
-                        final next = {...selectedTags};
-                        if (!next.remove(tag)) next.add(tag);
-                        widget.onTagFiltersChanged(next);
-                      },
-                      leadingIcon: Icon(
-                        selectedTags.contains(tag)
-                            ? Icons.check_box
-                            : Icons.check_box_outline_blank,
-                        size: 20,
-                      ),
-                      child: Text(tag),
-                    ),
-                  if (selectedTags.isNotEmpty) ...[
-                    const Divider(height: 1),
-                    MenuItemButton(
-                      onPressed: () => widget.onTagFiltersChanged({}),
-                      leadingIcon: const Icon(Icons.clear_all, size: 20),
-                      child: const Text('清除筛选'),
-                    ),
-                  ],
-                ],
-                builder: (context, controller, child) {
-                  return IconButton(
-                    tooltip: '按标签筛选',
-                    onPressed: () => controller.isOpen
-                        ? controller.close()
-                        : controller.open(),
-                    icon: Badge.count(
-                      count: selectedTags.length,
-                      isLabelVisible: selectedTags.isNotEmpty,
-                      child: Icon(
-                        Icons.filter_list,
-                        size: 20,
-                        color: selectedTags.isEmpty
-                            ? theme.colorScheme.onSurfaceVariant
-                            : theme.colorScheme.primary,
-                      ),
-                    ),
-                  );
-                },
+              IconButton(
+                tooltip: '按标签筛选',
+                onPressed: () => showTagFilterSheet(
+                  context: context,
+                  tags: widget.tags,
+                  selectedTags: selectedTags,
+                  onChanged: (tags) {
+                    if (mounted) widget.onTagFiltersChanged(tags);
+                  },
+                ),
+                icon: Badge.count(
+                  count: selectedTags.length,
+                  isLabelVisible: selectedTags.isNotEmpty,
+                  child: Icon(
+                    Icons.filter_list,
+                    size: 20,
+                    color: selectedTags.isEmpty
+                        ? theme.colorScheme.onSurfaceVariant
+                        : theme.colorScheme.primary,
+                  ),
+                ),
               ),
             _headerActions(theme),
           ],
@@ -2430,6 +2436,26 @@ class _HomeExamPreviewState extends State<_HomeExamPreview> {
   bool _selecting = false;
   final Set<String> _selectedIds = {};
 
+  @override
+  void didUpdateWidget(covariant _HomeExamPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final ids = widget.exams.map((exam) => exam.externalId).toSet();
+    _selectedIds.removeWhere((id) => !ids.contains(id));
+  }
+
+  void _toggleSelectAll() {
+    final ids = widget.exams.map((exam) => exam.externalId).toSet();
+    setState(() {
+      if (ids.every(_selectedIds.contains)) {
+        _selectedIds.clear();
+      } else {
+        _selectedIds
+          ..clear()
+          ..addAll(ids);
+      }
+    });
+  }
+
   void _startSelecting() {
     setState(() {
       _selecting = true;
@@ -2488,6 +2514,17 @@ class _HomeExamPreviewState extends State<_HomeExamPreview> {
             ],
             const Spacer(),
             if (_selecting) ...[
+              IconButton(
+                tooltip:
+                    exams.isNotEmpty &&
+                        exams.every(
+                          (exam) => _selectedIds.contains(exam.externalId),
+                        )
+                    ? '取消全选'
+                    : '全选',
+                onPressed: exams.isEmpty ? null : _toggleSelectAll,
+                icon: const Icon(Icons.select_all, size: 20),
+              ),
               IconButton(
                 tooltip: '添加到日程',
                 onPressed: _selectedIds.isEmpty ? null : _addSelectedToSchedule,

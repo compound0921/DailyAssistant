@@ -27,7 +27,7 @@ class LanSyncPage extends StatefulWidget {
   State<LanSyncPage> createState() => _LanSyncPageState();
 }
 
-class _LanSyncPageState extends State<LanSyncPage> with WidgetsBindingObserver {
+class _LanSyncPageState extends State<LanSyncPage> {
   late final _transport = widget.transport ?? LanSyncTransport();
   late final _store = widget.store ?? LanSyncStore();
   final _code = TextEditingController();
@@ -45,7 +45,6 @@ class _LanSyncPageState extends State<LanSyncPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     if (widget.onPrepare != null) {
       _busy = true;
       _status = '正在等待已有同步完成…';
@@ -66,20 +65,10 @@ class _LanSyncPageState extends State<LanSyncPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     unawaited(_share?.close());
     _transport.dispose();
     _code.dispose();
     super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.paused) return;
-    if (_share != null) {
-      unawaited(_stopSharing('应用已进入后台，共享已停止；返回后可重新开启'));
-    }
-    _transport.cancelReceive();
   }
 
   Future<void> _stopSharing([String? status]) async {
@@ -292,7 +281,9 @@ class _LanSyncPageState extends State<LanSyncPage> with WidgetsBindingObserver {
                         style: theme.textTheme.bodySmall,
                       ),
                       const SizedBox(height: AppSpacing.sm),
-                      const Text('连接码包含临时访问密钥，请只交给自己的另一台设备。关闭此页或进入后台会停止发送。'),
+                      const Text(
+                        '连接码包含临时访问密钥，请只交给自己的另一台设备。切到后台仍保持发送，离开此页会停止发送。',
+                      ),
                       const SizedBox(height: AppSpacing.md),
                       FilledButton.icon(
                         onPressed: () async {

@@ -13,6 +13,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _Transport extends LanSyncTransport {
+  int cancellations = 0;
+  bool disposed = false;
+
+  @override
+  void cancelReceive() {
+    cancellations++;
+    super.cancelReceive();
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    super.dispose();
+  }
+
   @override
   Future<LanSyncSnapshot> receive(String code) async => LanSyncSnapshot(
     capturedAt: DateTime(2026),
@@ -27,6 +42,26 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     FlutterSecureStorage.setMockInitialValues({});
+  });
+
+  testWidgets('background keeps sync alive; leaving page disposes transport', (
+    tester,
+  ) async {
+    final transport = _Transport();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LanSyncPage(transport: transport, onApplied: () async {}),
+      ),
+    );
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    expect(transport.cancellations, 0);
+    expect(transport.disposed, isFalse);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(transport.disposed, isTrue);
+    expect(transport.cancellations, 1);
   });
 
   testWidgets(

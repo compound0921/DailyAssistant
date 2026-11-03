@@ -90,6 +90,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   SyncTarget _syncTarget = SyncTarget.xuexitong;
   List<JiaowuMessage> _jiaowuMessages = const [];
   List<JiaowuExam> _jiaowuExams = const [];
+  List<String> _examOrder = const [];
+  Future<void> _examOrderSave = Future.value();
   YuketangSnapshot? _yuketangSnapshot;
   bool _deadlineCollapsed = false;
   bool _examCollapsed = false;
@@ -171,14 +173,37 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _loadJiaowuSnapshot() async {
     try {
       final snapshot = await _jiaowuService.loadSnapshot();
+      final order = await _settingsRepository.loadHomeExamOrder();
       if (!mounted) return;
       setState(() {
         _jiaowuMessages = snapshot?.messages ?? const [];
         _jiaowuExams = snapshot?.exams ?? const [];
+        _examOrder = order;
       });
     } catch (_) {
       // 本地状态读取失败不影响主界面。
     }
+  }
+
+  void _saveExamOrder(List<String> order) {
+    setState(() => _examOrder = order);
+    // 连续拖动按顺序落盘，避免较早的写入覆盖最新顺序。
+    _examOrderSave = _examOrderSave.then((_) async {
+      try {
+        await _settingsRepository.saveHomeExamOrder(order);
+      } catch (error) {
+        if (mounted) _showMessage('保存考试排序失败：$error');
+      }
+    });
+  }
+
+  void _reorderExams(List<JiaowuExam> exams) {
+    final ids = exams.map((exam) => exam.externalId).toList();
+    final visibleIds = ids.toSet();
+    _saveExamOrder([
+      ...ids,
+      ..._examOrder.where((id) => !visibleIds.contains(id)),
+    ]);
   }
 
   Future<void> _loadYuketangSnapshot() async {
@@ -1088,6 +1113,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           onRefresh: _refreshFromPull,
           jiaowuMessages: _jiaowuMessages,
           jiaowuExams: _jiaowuExams,
+          examOrder: _examOrder,
+          onReorderExams: _reorderExams,
+          onResetExamOrder: () => _saveExamOrder(const []),
           yuketangSnapshot: _yuketangSnapshot,
           onAddExam: _addJiaowuExam,
           onEditExam: _editJiaowuExam,
@@ -1172,6 +1200,9 @@ class _HomeOverview extends StatelessWidget {
     required this.onRefresh,
     required this.jiaowuMessages,
     required this.jiaowuExams,
+    required this.examOrder,
+    required this.onReorderExams,
+    required this.onResetExamOrder,
     required this.yuketangSnapshot,
     required this.onAddExam,
     required this.onEditExam,
@@ -1200,6 +1231,9 @@ class _HomeOverview extends StatelessWidget {
   final Future<void> Function() onRefresh;
   final List<JiaowuMessage> jiaowuMessages;
   final List<JiaowuExam> jiaowuExams;
+  final List<String> examOrder;
+  final ValueChanged<List<JiaowuExam>> onReorderExams;
+  final VoidCallback onResetExamOrder;
   final YuketangSnapshot? yuketangSnapshot;
   final VoidCallback onAddExam;
   final ValueChanged<JiaowuExam> onEditExam;
@@ -1271,7 +1305,11 @@ class _HomeOverview extends StatelessWidget {
             for (final item in groups.incomplete)
               if (item.tags.any(deadlineTagFilters.contains)) item,
           ];
-    final homeExams = homeVisibleExams(exams: jiaowuExams, now: now);
+    final homeExams = homeVisibleExams(
+      exams: jiaowuExams,
+      now: now,
+      manualOrder: examOrder,
+    );
     final yuketangLive = yuketangSnapshot?.liveLessonsAt(now) ?? const [];
     final yuketangHomeworks =
         yuketangSnapshot?.activeHomeworks(now) ?? const [];
@@ -1343,6 +1381,9 @@ class _HomeOverview extends StatelessWidget {
       const SizedBox(height: AppSpacing.md),
       _HomeExamPreview(
         exams: homeExams,
+        manualOrder: examOrder.isNotEmpty,
+        onReorder: onReorderExams,
+        onResetOrder: onResetExamOrder,
         totalCount: homeExams.length,
         now: now,
         collapsed: examCollapsed,
@@ -2325,6 +2366,9 @@ class _HomeDeadlineRow extends StatelessWidget {
 class _HomeExamPreview extends StatefulWidget {
   const _HomeExamPreview({
     required this.exams,
+    required this.manualOrder,
+    required this.onReorder,
+    required this.onResetOrder,
     required this.totalCount,
     required this.now,
     required this.collapsed,
@@ -2337,6 +2381,9 @@ class _HomeExamPreview extends StatefulWidget {
   });
 
   final List<JiaowuExam> exams;
+  final bool manualOrder;
+  final ValueChanged<List<JiaowuExam>> onReorder;
+  final VoidCallback onResetOrder;
   final int totalCount;
   final DateTime now;
   final bool collapsed;
@@ -2454,6 +2501,23 @@ class _HomeExamPreviewState extends State<_HomeExamPreview> {
             ],
           ],
         ),
+        if (_selecting && !collapsed)
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '拖动右侧手柄排序',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: widget.manualOrder ? widget.onResetOrder : null,
+                child: const Text('按开始时间排序'),
+              ),
+            ],
+          ),
         if (!collapsed) ...[
           const SizedBox(height: AppSpacing.xs),
           Card(
@@ -2484,51 +2548,96 @@ class _HomeExamPreviewState extends State<_HomeExamPreview> {
                       ],
                     ),
                   )
+                : _selecting
+                ? ReorderableListView.builder(
+                    shrinkWrap: true,
+                    primary: false,
+                    physics: const NeverScrollableScrollPhysics(),
+                    padding: EdgeInsets.zero,
+                    buildDefaultDragHandles: false,
+                    proxyDecorator: (child, index, animation) =>
+                        Material(type: MaterialType.transparency, child: child),
+                    itemCount: exams.length,
+                    onReorderItem: (oldIndex, newIndex) {
+                      final ordered = [...exams];
+                      ordered.insert(newIndex, ordered.removeAt(oldIndex));
+                      widget.onReorder(ordered);
+                    },
+                    itemBuilder: (context, index) {
+                      final exam = exams[index];
+                      return Column(
+                        key: ValueKey(exam.externalId),
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _HomeExamRow(
+                                  exam: exam,
+                                  now: widget.now,
+                                  selecting: true,
+                                  selected: _selectedIds.contains(
+                                    exam.externalId,
+                                  ),
+                                  onTap: () => _toggleSelected(exam.externalId),
+                                ),
+                              ),
+                              ReorderableDragStartListener(
+                                index: index,
+                                child: const Tooltip(
+                                  message: '拖动排序',
+                                  child: SizedBox(
+                                    width: 48,
+                                    height: 48,
+                                    child: ColoredBox(
+                                      color: Colors.transparent,
+                                      child: Icon(Icons.drag_handle, size: 20),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (index < exams.length - 1)
+                            Divider(
+                              height: 1,
+                              indent: 16,
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                        ],
+                      );
+                    },
+                  )
                 : Column(
                     children: [
                       for (var index = 0; index < exams.length; index++) ...[
-                        if (_selecting)
-                          _HomeExamRow(
+                        SwipeActionRow(
+                          backgroundColor: cardColor,
+                          actions: [
+                            SwipeAction(
+                              label: '编辑',
+                              icon: Icons.edit_outlined,
+                              backgroundColor:
+                                  theme.colorScheme.primaryContainer,
+                              foregroundColor:
+                                  theme.colorScheme.onPrimaryContainer,
+                              onPressed: () => widget.onEditExam(exams[index]),
+                            ),
+                            SwipeAction(
+                              label: '删除',
+                              icon: Icons.delete_outline,
+                              backgroundColor: theme.colorScheme.errorContainer,
+                              foregroundColor:
+                                  theme.colorScheme.onErrorContainer,
+                              onPressed: () =>
+                                  widget.onDeleteExam(exams[index]),
+                            ),
+                          ],
+                          child: _HomeExamRow(
                             exam: exams[index],
                             now: widget.now,
-                            selecting: true,
-                            selected: _selectedIds.contains(
-                              exams[index].externalId,
-                            ),
-                            onTap: () =>
-                                _toggleSelected(exams[index].externalId),
-                          )
-                        else
-                          SwipeActionRow(
-                            backgroundColor: cardColor,
-                            actions: [
-                              SwipeAction(
-                                label: '编辑',
-                                icon: Icons.edit_outlined,
-                                backgroundColor:
-                                    theme.colorScheme.primaryContainer,
-                                foregroundColor:
-                                    theme.colorScheme.onPrimaryContainer,
-                                onPressed: () =>
-                                    widget.onEditExam(exams[index]),
-                              ),
-                              SwipeAction(
-                                label: '删除',
-                                icon: Icons.delete_outline,
-                                backgroundColor:
-                                    theme.colorScheme.errorContainer,
-                                foregroundColor:
-                                    theme.colorScheme.onErrorContainer,
-                                onPressed: () =>
-                                    widget.onDeleteExam(exams[index]),
-                              ),
-                            ],
-                            child: _HomeExamRow(
-                              exam: exams[index],
-                              now: widget.now,
-                              onTap: () => widget.onEditExam(exams[index]),
-                            ),
+                            onTap: () => widget.onEditExam(exams[index]),
                           ),
+                        ),
                         if (index < exams.length - 1)
                           Divider(
                             height: 1,

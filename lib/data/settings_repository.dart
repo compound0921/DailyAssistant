@@ -11,6 +11,7 @@ class SettingsRepository {
   static const String appearanceKey = 'timetable_appearance_v1';
   static const String homeDeadlineCollapsedKey = 'home_deadline_collapsed_v1';
   static const String homeExamCollapsedKey = 'home_exam_collapsed_v1';
+  static const String homeExamOrderKey = 'home_exam_order_v1';
   static const String homeYuketangCollapsedKey = 'home_yuketang_collapsed_v1';
   static const String deadlinePinEnabledKey = 'deadline_pin_enabled_v1';
   static const String deadlineReminderEnabledKey =
@@ -71,6 +72,21 @@ class SettingsRepository {
   Future<void> saveHomeExamCollapsed(bool collapsed) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setBool(homeExamCollapsedKey, collapsed);
+  }
+
+  /// 空列表表示自动按考试开始时间排序。
+  Future<List<String>> loadHomeExamOrder() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getStringList(homeExamOrderKey) ?? const [];
+  }
+
+  Future<void> saveHomeExamOrder(List<String> order) async {
+    final preferences = await SharedPreferences.getInstance();
+    if (order.isEmpty) {
+      await preferences.remove(homeExamOrderKey);
+    } else {
+      await preferences.setStringList(homeExamOrderKey, order);
+    }
   }
 
   Future<bool> loadHomeYuketangCollapsed() async {

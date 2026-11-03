@@ -96,6 +96,7 @@ class _ExamEditPageState extends State<ExamEditPage> {
         current.minute,
       );
       if (start) {
+        _endAt = next.add(_endAt.difference(_startAt));
         _startAt = next;
       } else {
         _endAt = next;
@@ -126,6 +127,7 @@ class _ExamEditPageState extends State<ExamEditPage> {
         picked.minute,
       );
       if (start) {
+        _endAt = next.add(_endAt.difference(_startAt));
         _startAt = next;
       } else {
         _endAt = next;
@@ -192,7 +194,6 @@ class _ExamEditPageState extends State<ExamEditPage> {
     if (confirmed != true || !mounted) return;
     Navigator.of(context).pop(const ExamEditResult.restore());
   }
-
 
   @override
   Widget build(BuildContext context) {

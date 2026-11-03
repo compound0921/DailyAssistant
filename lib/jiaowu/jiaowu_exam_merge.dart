@@ -44,10 +44,11 @@ List<JiaowuExam> mergeJiaowuExams({
 /// 首页“考试安排”可见的考试。
 ///
 /// 未过期考试自动显示；过期考试和手动考试只有星标或手动添加后才显示。
-/// 星标/手动考试优先排在前面，保证用户选择能出现在首页前三场。
+/// 默认按开始时间升序；手动排序中的考试优先，新考试按时间追加。
 List<JiaowuExam> homeVisibleExams({
   required List<JiaowuExam> exams,
   required DateTime now,
+  List<String> manualOrder = const [],
 }) {
   final visible = exams
       .where(
@@ -55,23 +56,18 @@ List<JiaowuExam> homeVisibleExams({
       )
       .toList();
 
-  int group(JiaowuExam exam) => exam.manual || exam.showOnHome ? 0 : 1;
-
+  final ranks = {
+    for (var i = 0; i < manualOrder.length; i++) manualOrder[i]: i,
+  };
   visible.sort((left, right) {
-    final byGroup = group(left).compareTo(group(right));
-    if (byGroup != 0) return byGroup;
-
-    final leftCurrent = left.endAt.isAfter(now);
-    final rightCurrent = right.endAt.isAfter(now);
-    if (leftCurrent != rightCurrent) return leftCurrent ? -1 : 1;
-    if (leftCurrent) {
-      final byStart = left.startAt.compareTo(right.startAt);
-      if (byStart != 0) return byStart;
-    } else {
-      final byStart = right.startAt.compareTo(left.startAt);
-      if (byStart != 0) return byStart;
-    }
-    return left.courseName.compareTo(right.courseName);
+    final byRank = (ranks[left.externalId] ?? manualOrder.length).compareTo(
+      ranks[right.externalId] ?? manualOrder.length,
+    );
+    if (byRank != 0) return byRank;
+    final byStart = left.startAt.compareTo(right.startAt);
+    if (byStart != 0) return byStart;
+    final byName = left.courseName.compareTo(right.courseName);
+    return byName != 0 ? byName : left.externalId.compareTo(right.externalId);
   });
   return visible;
 }
